@@ -1,7 +1,7 @@
 {
   "download_dir": "./downloads",
   "db_path": "scraper_cache.db",
-  "min_size_kb": 100,
+  "min_size_kb": 20,
 
   "max_web_depth": -1,
   "max_downloads_per_page": 0,
