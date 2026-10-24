@@ -1,0 +1,36 @@
+{
+  "download_dir": "./downloads",
+  "db_path": "scraper_cache.db",
+  "min_size_kb": 100,
+
+  "max_web_depth": -1,
+  "max_downloads_per_page": 0,
+  "max_suffix_probes": 0,
+
+  "include_discovered": false,
+  "discovered_seeds_file": "discovered_seeds.txt",
+
+  "web_delay_range": [0, 0.1],
+  "max_connections": 32,
+  "request_timeout": 20.0,
+
+  "probe_telegraph_dates": true,
+  "probe_date_concurrency": 32,
+
+  "discovery": {
+    "enabled": false,
+    "keywords": [
+      "wallpaper"
+    ],
+    "search_engines": [
+      "duckduckgo"
+    ]
+  },
+
+  "telegram_api": {
+    "api_id": null,
+    "api_hash": null,
+    "phone": null,
+    "session_name": "telegram_media"
+  }
+}
