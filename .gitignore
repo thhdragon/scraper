@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Scraper caches, SQLite databases, and downloaded artifacts
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.session
+*.session-journal
+downloads/
+flagged/
+discovered_seeds.txt
+*.log
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.swp

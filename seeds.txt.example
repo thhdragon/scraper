@@ -1,0 +1,13 @@
+# Example seeds file for scapper
+# Lines starting with # are comments.
+# Supported formats:
+# 1. Public Telegram channel username or URL:
+#    durov
+#    https://t.me/s/durov
+#
+# 2. Telegra.ph post URL or base slug:
+#    https://telegra.ph/Sample-Post-10-24
+#    Sample-Post
+#
+# 3. Raw search keywords/phrases:
+#    wallpaper
