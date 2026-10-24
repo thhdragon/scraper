@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.13"
 # dependencies = [
 #   "httpx",
 #   "beautifulsoup4",
@@ -28,14 +28,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
 logger = logging.getLogger("scraper")
+
+
+def setup_logging(verbose: bool = False) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+        force=True,
+    )
+
 
 
 USER_AGENTS = [
@@ -117,10 +122,14 @@ def detect_media_type_from_bytes(data: bytes) -> tuple[str, str] | None:
             return "image/avif", ".avif"
         if major_brand in {b"heic", b"heix", b"hevc", b"mif1"}:
             return "image/heic", ".heic"
+        if major_brand in {b"M4A ", b"M4B "}:
+            return "audio/mp4", ".m4a"
         if major_brand in {b"qt  ", b"moov"}:
             return "video/quicktime", ".mov"
         return "video/mp4", ".mp4"
     if data.startswith(b"\x1a\x45\xdf\xa3"):
+        if b"matroska" in data[:64]:
+            return "video/x-matroska", ".mkv"
         return "video/webm", ".webm"
     if data.startswith(b"OggS"):
         return "audio/ogg", ".ogg"
@@ -136,12 +145,12 @@ def detect_media_type_from_bytes(data: bytes) -> tuple[str, str] | None:
 
 
 TELEGRAM_DOMAINS = {"t.me", "telegram.me", "telegram.dog", "telegram.space"}
-TELEGRAM_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
+TELEGRAM_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,32}$")
 TELEGRAM_URL_RE = re.compile(
-    r"https?://(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog|telegram\.space)/(?:s/)?([A-Za-z0-9_]{4,32})(?:/(\d+))?",
+    r"https?://(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog|telegram\.space)/(?:s/)?([A-Za-z0-9_]{3,32})(?:/(\d+))?",
     re.IGNORECASE,
 )
-TELEGRAM_MENTION_RE = re.compile(r"(?<!\w)@([A-Za-z0-9_]{4,32})\b")
+TELEGRAM_MENTION_RE = re.compile(r"(?<!\w)@([A-Za-z0-9_]{3,32})\b")
 TELEGRAPH_RESERVED = {"file", "upload", "check", "a", "edit", "api"}
 TELEGRAPH_URL_RE = re.compile(
     r"https?://(?:www\.)?telegra\.ph/(?!(?:file|upload|check|a|edit|api)(?:[/?#]|$))([A-Za-z0-9_\-]+)",
@@ -150,7 +159,6 @@ TELEGRAPH_URL_RE = re.compile(
 TELEGRAPH_SLUG_DATE_RE = re.compile(
     r"^(?P<base>.+)-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])(?:-(?P<page>\d+))?$"
 )
-TELEGRAPH_SLUG_MONTH_RE = re.compile(r"^(?P<base>.+?)-(?:0[1-9]|1[0-2])$")
 TELEGRAPH_URL_SUFFIX_RE = re.compile(
     r"^(?P<base_dated>https?://(?:www\.)?telegra\.ph/.+-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))(?:-(\d+))?$"
 )
@@ -188,13 +196,35 @@ TELEGRAM_RESERVED = {
 }
 
 
+def _safe_int(val: typing.Any, default: int, min_val: int | None = None) -> int:
+    try:
+        res = int(val)
+        if min_val is not None:
+            res = max(min_val, res)
+        return res
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(
+    val: typing.Any, default: float, min_val: float | None = None
+) -> float:
+    try:
+        res = float(val)
+        if min_val is not None:
+            res = max(min_val, res)
+        return res
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class ScraperConfig:
     config_path: Path = Path("config.json")
     db_path: Path = Path("scraper_cache.db")
     download_dir: Path = Path("downloads")
 
-    min_size_kb: int = 100
+    min_size_kb: int = 20
 
     # -1 means infinite depth
     max_web_depth: int = -1
@@ -243,38 +273,35 @@ class ScraperConfig:
                 data = {}
 
         delay_range = data.get("web_delay_range", [1.0, 3.0])
-        if not isinstance(delay_range, (list, tuple)) or len(delay_range) != 2:
-            delay_range = (1.0, 3.0)
-        delay_min = max(0.0, float(delay_range[0]))
-        delay_max = max(delay_min, float(delay_range[1]))
+        if isinstance(delay_range, (list, tuple)) and len(delay_range) == 2:
+            delay_min = _safe_float(delay_range[0], 1.0, min_val=0.0)
+            delay_max = max(delay_min, _safe_float(delay_range[1], 3.0, min_val=0.0))
+        else:
+            delay_min, delay_max = 1.0, 3.0
 
         discovery = data.get("discovery", {})
         if not isinstance(discovery, dict):
             discovery = {}
 
-        max_web_depth = data.get("max_web_depth", -1)
-        if max_web_depth is None:
-            max_web_depth = -1
+        max_web_depth = _safe_int(data.get("max_web_depth", -1), -1)
 
-        try:
-            max_web_depth = int(max_web_depth)
-        except Exception:
-            max_web_depth = -1
+        raw_api = data.get("telegram_api", {})
+        telegram_api = raw_api if isinstance(raw_api, dict) else {}
 
         return cls(
             config_path=path,
             db_path=Path(data.get("db_path", "scraper_cache.db")),
             download_dir=Path(data.get("download_dir", "./downloads")),
-            min_size_kb=max(0, int(data.get("min_size_kb", 100))),
+            min_size_kb=_safe_int(data.get("min_size_kb", 20), 20, min_val=0),
             max_web_depth=max_web_depth,
             web_delay_min=delay_min,
             web_delay_max=delay_max,
-            max_connections=max(1, int(data.get("max_connections", 5))),
-            max_downloads_per_page=max(0, int(data.get("max_downloads_per_page", 0))),
-            request_timeout=max(1.0, float(data.get("request_timeout", 20.0))),
+            max_connections=_safe_int(data.get("max_connections", 5), 5, min_val=1),
+            max_downloads_per_page=_safe_int(data.get("max_downloads_per_page", 0), 0, min_val=0),
+            request_timeout=_safe_float(data.get("request_timeout", 20.0), 20.0, min_val=1.0),
             probe_telegraph_dates=bool(data.get("probe_telegraph_dates", False)),
-            probe_date_concurrency=max(1, int(data.get("probe_date_concurrency", 10))),
-            max_suffix_probes=max(0, int(data.get("max_suffix_probes", 0))),
+            probe_date_concurrency=_safe_int(data.get("probe_date_concurrency", 10), 10, min_val=1),
+            max_suffix_probes=_safe_int(data.get("max_suffix_probes", 0), 0, min_val=0),
             discovery_enabled=bool(discovery.get("enabled", False)),
             keywords=tuple(str(k) for k in discovery.get("keywords", ["wallpaper"])),
             search_engines=tuple(
@@ -284,7 +311,7 @@ class ScraperConfig:
             discovered_seeds_file=Path(
                 data.get("discovered_seeds_file", "discovered_seeds.txt")
             ),
-            telegram_api=data.get("telegram_api", {}),
+            telegram_api=telegram_api,
             raw=data,
         )
 
@@ -322,6 +349,12 @@ class Storage:
             self._conn = conn
         return self._conn
 
+    def __enter__(self) -> typing.Self:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
     def close(self) -> None:
         if self._conn is not None:
             with contextlib.suppress(Exception):
@@ -357,7 +390,7 @@ class Storage:
                 );
 
                 CREATE TABLE IF NOT EXISTS probed_base_slugs (
-                    base_slug TEXT PRIMARY KEY,
+                    base_slug TEXT PRIMARY KEY COLLATE NOCASE,
                     probed_at TEXT DEFAULT (datetime('now'))
                 );
 
@@ -397,6 +430,23 @@ class Storage:
                 "INSERT OR IGNORE INTO crawled_urls (url) VALUES (?)",
                 (url,),
             )
+
+    def uncrawl_seed(self, seed: str) -> None:
+        """Remove a seed URL or username from crawled_urls to allow re-crawling."""
+        if not seed:
+            return
+        clean = seed.strip().lstrip("@")
+        urls = [seed, clean]
+        if "://" not in seed:
+            urls.extend([
+                f"https://t.me/s/{clean}",
+                f"https://t.me/s/{clean.lower()}",
+                f"https://telegra.ph/{clean}",
+            ])
+        conn = self._get_conn()
+        with conn:
+            for u in urls:
+                conn.execute("DELETE FROM crawled_urls WHERE url = ?", (u,))
 
     # ---------- Downloaded hashes & URLs ----------
 
@@ -510,19 +560,23 @@ class Storage:
     # ---------- Base slug probing ----------
 
     def has_base_slug_probed(self, base_slug: str) -> bool:
+        if not base_slug:
+            return False
         conn = self._get_conn()
         row = conn.execute(
             "SELECT 1 FROM probed_base_slugs WHERE base_slug = ?",
-            (base_slug,),
+            (base_slug.strip().lower(),),
         ).fetchone()
         return row is not None
 
     def mark_base_slug_probed(self, base_slug: str) -> None:
+        if not base_slug:
+            return
         conn = self._get_conn()
         with conn:
             conn.execute(
                 "INSERT OR IGNORE INTO probed_base_slugs (base_slug) VALUES (?)",
-                (base_slug,),
+                (base_slug.strip().lower(),),
             )
 
     # ---------- Discovered seeds ----------
@@ -692,6 +746,12 @@ class MediaScraper:
         )
         self.cfg.download_dir.mkdir(parents=True, exist_ok=True)
 
+    async def __aenter__(self) -> typing.Self:
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.storage.close()
+
     # ------------------ HTTP helpers ------------------
 
     def make_client(self) -> httpx.AsyncClient:
@@ -782,7 +842,11 @@ class MediaScraper:
 
             if resp.status_code == 429:
                 retry_after = resp.headers.get("retry-after")
-                wait_time = float(retry_after) if retry_after and retry_after.isdigit() else 2.0
+                wait_time = (
+                    float(retry_after)
+                    if retry_after and retry_after.isdigit()
+                    else 1.5 + random.uniform(0.5, 2.0)
+                )
                 await asyncio.sleep(wait_time)
                 resp = await client.head(
                     url,
@@ -857,17 +921,22 @@ class MediaScraper:
                     logger.debug(f"Skipping {url}: HTTP {resp.status_code}")
                     return None
 
+                content_type = (
+                    resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                )
+                if content_type.startswith(("text/html", "application/json", "text/plain")):
+                    self.storage.record_downloaded_media_url(url, "")
+                    return None
+
                 content_length = resp.headers.get("content-length")
                 if content_length:
                     try:
                         if int(content_length) < self.cfg.min_size_bytes:
+                            self.storage.record_downloaded_media_url(url, "")
                             return None
                     except ValueError:
                         pass
 
-                content_type = (
-                    resp.headers.get("content-type", "").split(";")[0].strip().lower()
-                )
                 ext = self._extension_from_content_type(
                     content_type
                 ) or self._extension_from_url(url)
@@ -878,6 +947,7 @@ class MediaScraper:
                     or "/file/" in url
                 )
                 if not self._looks_like_media(content_type, ext) and not is_generic_or_file:
+                    self.storage.record_downloaded_media_url(url, "")
                     return None
 
                 sha256 = hashlib.sha256()
@@ -893,6 +963,7 @@ class MediaScraper:
                         bytes_written += len(chunk)
 
             if bytes_written < self.cfg.min_size_bytes:
+                self.storage.record_downloaded_media_url(url, "")
                 return None
 
             if (not ext or ext == ".bin") and first_chunk:
@@ -900,6 +971,7 @@ class MediaScraper:
                 if detected:
                     ext = detected[1]
                 elif not self._looks_like_media(content_type, ext):
+                    self.storage.record_downloaded_media_url(url, "")
                     return None
 
             file_hash = sha256.hexdigest()
@@ -965,7 +1037,7 @@ class MediaScraper:
             return_exceptions=True,
         )
 
-        for url, result in zip(unique_urls, results):
+        for url, result in zip(unique_urls, results, strict=True):
             if isinstance(result, Exception):
                 logger.debug(f"Download task failed for {url}: {result}")
 
@@ -1071,7 +1143,7 @@ class MediaScraper:
             q_pairs = []
             for param in ("before", "after"):
                 val = qs.get(param, [None])[0]
-                if val:
+                if val and val.isdigit() and int(val) > 0:
                     q_pairs.append(f"{param}={val}")
             if q_pairs:
                 return f"{base}?{'&'.join(q_pairs)}"
@@ -1107,10 +1179,6 @@ class MediaScraper:
         m = TELEGRAPH_SLUG_DATE_RE.match(path)
         if m:
             return m.group("base")
-
-        m_month = TELEGRAPH_SLUG_MONTH_RE.match(path)
-        if m_month:
-            return m_month.group("base")
 
         return path
 
@@ -1235,7 +1303,7 @@ class MediaScraper:
         return added
 
     async def add_seed(
-        self, client: httpx.AsyncClient, seed: str, depth: int = 0
+        self, client: httpx.AsyncClient | None = None, seed: str = "", depth: int = 0
     ) -> None:
         seed = seed.strip()
 
@@ -1254,13 +1322,6 @@ class MediaScraper:
                     # Cross-pollinate to Telegram
                     for tg_cand in self.slugify_telegram_candidates(base):
                         self.enqueue_url(f"https://t.me/s/{tg_cand}", "telegram", depth)
-                        self.storage.add_discovered_seed(tg_cand)
-
-                    if self.cfg.probe_telegraph_dates:
-                        discovered = await self.probe_slug_all_dates(client, base)
-
-                        for discovered_url in discovered:
-                            self.enqueue_url(discovered_url, "telegraph", depth)
 
             return
 
@@ -1280,15 +1341,6 @@ class MediaScraper:
                         self.enqueue_url(
                             f"https://telegra.ph/{ph_cand}", "telegraph", depth
                         )
-                        self.storage.add_discovered_seed(ph_cand)
-
-                        if self.cfg.probe_telegraph_dates:
-                            discovered = await self.probe_slug_all_dates(
-                                client, ph_cand
-                            )
-
-                            for discovered_url in discovered:
-                                self.enqueue_url(discovered_url, "telegraph", depth)
 
             return
 
@@ -1301,18 +1353,10 @@ class MediaScraper:
         # 1. Telegram candidates
         for tg_slug in self.slugify_telegram_candidates(raw):
             self.enqueue_url(f"https://t.me/s/{tg_slug}", "telegram", depth)
-            self.storage.add_discovered_seed(tg_slug)
 
         # 2. Telegraph candidates
         for ph_slug in self.slugify_telegraph_candidates(raw):
             self.enqueue_url(f"https://telegra.ph/{ph_slug}", "telegraph", depth)
-            self.storage.add_discovered_seed(ph_slug)
-
-            if self.cfg.probe_telegraph_dates:
-                discovered = await self.probe_slug_all_dates(client, ph_slug)
-
-                for discovered_url in discovered:
-                    self.enqueue_url(discovered_url, "telegraph", depth)
 
     # ------------------ Discovery ------------------
 
@@ -1355,13 +1399,28 @@ class MediaScraper:
                     data={"q": query},
                 )
 
-                if resp is None or resp.status_code != 200:
+                if resp is None:
+                    continue
+
+                if resp.status_code == 202 or (resp.text and "anomaly" in resp.text):
+                    logger.warning(
+                        f"DuckDuckGo rate-limiting/anomaly check triggered for '{query}' (status {resp.status_code})."
+                    )
+                    continue
+
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"DuckDuckGo search returned status {resp.status_code} for '{query}'."
+                    )
                     continue
 
                 soup = BeautifulSoup(resp.text, "html.parser")
 
                 for a in soup.find_all("a", href=True):
-                    target = self._unwrap_ddg(a["href"])
+                    href_val = a.get("href")
+                    if not isinstance(href_val, str) or not href_val:
+                        continue
+                    target = self._unwrap_ddg(href_val)
 
                     tg = self.normalize_telegraph_url(target)
 
@@ -1416,7 +1475,10 @@ class MediaScraper:
                 soup = BeautifulSoup(resp.text, "html.parser")
 
                 for a in soup.find_all("a", href=True):
-                    target = a["href"]
+                    href_val = a.get("href")
+                    if not isinstance(href_val, str) or not href_val:
+                        continue
+                    target = href_val
 
                     tg = self.normalize_telegraph_url(target)
 
@@ -1497,15 +1559,18 @@ class MediaScraper:
             # 1. Media tags
             for tag in soup.find_all(["img", "video", "source", "audio"]):
                 src = tag.get("src") or tag.get("data-src")
-                if src:
+                if isinstance(src, str) and src:
                     media_urls.append(urllib.parse.urljoin(url, src))
                 poster = tag.get("poster")
-                if poster:
+                if isinstance(poster, str) and poster:
                     media_urls.append(urllib.parse.urljoin(url, poster))
 
             # 2. Links in <a> tags (check for direct media and page links)
             for a in soup.find_all("a", href=True):
-                href = urllib.parse.urljoin(url, a["href"])
+                href_val = a.get("href")
+                if not isinstance(href_val, str) or not href_val:
+                    continue
+                href = urllib.parse.urljoin(url, href_val)
                 ext = self._extension_from_url(href)
                 if ext in MEDIA_EXTENSIONS or "/file/" in href:
                     media_urls.append(href)
@@ -1541,10 +1606,12 @@ class MediaScraper:
             # 4. Author handle in <address>
             for addr in soup.find_all("address"):
                 for a in addr.find_all("a", href=True):
-                    author_href = urllib.parse.urljoin(url, a["href"])
-                    tel = self.normalize_telegram_url(author_href)
-                    if tel:
-                        telegram_urls.add(tel)
+                    a_href = a.get("href")
+                    if isinstance(a_href, str) and a_href:
+                        author_href = urllib.parse.urljoin(url, a_href)
+                        tel = self.normalize_telegram_url(author_href)
+                        if tel:
+                            telegram_urls.add(tel)
                 addr_text = addr.get_text()
                 for mention in TELEGRAM_MENTION_RE.findall(addr_text):
                     if mention.lower() not in TELEGRAM_RESERVED:
@@ -1612,13 +1679,11 @@ class MediaScraper:
         logger.info(f"Probing all 366 date suffixes for base slug: {base_slug}")
 
         days_per_month = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        probe_urls: list[str] = []
-
-        for month, days in enumerate(days_per_month, start=1):
-            for day in range(1, days + 1):
-                probe_urls.append(
-                    f"https://telegra.ph/{base_slug}-{month:02d}-{day:02d}"
-                )
+        probe_urls = [
+            f"https://telegra.ph/{base_slug}-{month:02d}-{day:02d}"
+            for month, days in enumerate(days_per_month, start=1)
+            for day in range(1, days + 1)
+        ]
 
         concurrency = max(1, min(self.cfg.probe_date_concurrency, self.cfg.max_connections))
         sem = asyncio.Semaphore(concurrency)
@@ -1708,15 +1773,27 @@ class MediaScraper:
                 logger.warning(f"Failed to fetch Telegram preview: {url}")
                 return media_urls, telegraph_urls, discovered_telegram, before_url
 
+            resp_url_str = str(getattr(resp, "url", url))
+            parsed_resp = urllib.parse.urlparse(resp_url_str)
+            resp_netloc = parsed_resp.netloc.lower().split(":")[0].removeprefix("www.")
+            if resp_netloc not in TELEGRAM_DOMAINS or not parsed_resp.path.startswith("/s/"):
+                logger.warning(
+                    f"Telegram preview for '{url}' redirected to '{resp_url_str}' "
+                    "(channel does not exist or preview unavailable). Skipping."
+                )
+                return media_urls, telegraph_urls, discovered_telegram, before_url
+
             soup = BeautifulSoup(resp.text, "html.parser")
             for tag in soup(["script", "style", "noscript"]):
                 tag.decompose()
 
             messages = soup.select(".tgme_widget_message")
 
-            # 1. Photos in message wraps and albums
+            # 1. Photos and video thumbnails in message wraps and albums
             for wrap in soup.find_all(
-                class_=re.compile(r"tgme_widget_message_photo_wrap")
+                class_=re.compile(
+                    r"tgme_widget_message_photo_wrap|tgme_widget_message_video_thumb|tgme_widget_message_roundvideo_thumb"
+                )
             ):
                 style = wrap.get("style", "")
                 if isinstance(style, str) and style:
@@ -1841,8 +1918,6 @@ class MediaScraper:
                         telegraph_urls.add(ph_norm)
 
             # 10. Pagination for older messages
-            from bs4 import Tag
-
             next_link = soup.find("a", class_=re.compile(r"(?:tgme|tme)_messages_more"))
             if next_link is None:
                 next_link = soup.find("a", href=re.compile(r"[?&]before="))
@@ -1869,7 +1944,7 @@ class MediaScraper:
                     discovered_telegram.discard(norm_before)
                     m_b = TELEGRAM_URL_RE.match(norm_before)
                     if m_b:
-                        discovered_telegram.discard(f"https://t.me/s/{m_b.group(1)}")
+                        discovered_telegram.discard(f"https://t.me/s/{m_b.group(1).lower()}")
 
         except Exception as exc:
             logger.error(f"Error scraping Telegram preview {url}: {exc}")
@@ -2001,7 +2076,25 @@ class MediaScraper:
         downloaded: str | None = None
 
         try:
-            downloaded = await client.download_media(message, file=str(temp_path))
+            for attempt in range(2):
+                try:
+                    downloaded = await client.download_media(message, file=str(temp_path))
+                    break
+                except Exception as exc:
+                    seconds = getattr(exc, "seconds", None)
+                    if seconds is not None and attempt == 0:
+                        if seconds > 120:
+                            logger.warning(
+                                f"Telegram FloodWait too long ({seconds}s). Skipping media."
+                            )
+                            return None
+                        logger.warning(
+                            f"Telegram FloodWait encountered: waiting {seconds} seconds."
+                        )
+                        await asyncio.sleep(seconds + 1)
+                        continue
+                    logger.error(f"Error downloading Telethon media: {exc}")
+                    return None
 
             if not downloaded:
                 return None
@@ -2069,22 +2162,7 @@ class MediaScraper:
             return final_path
 
         except Exception as exc:
-            try:
-                from telethon.errors import FloodWaitError
-                if isinstance(exc, FloodWaitError):
-                    logger.warning(
-                        f"Telegram FloodWait encountered: waiting {exc.seconds} seconds."
-                    )
-                    await asyncio.sleep(exc.seconds + 1)
-                    try:
-                        downloaded = await client.download_media(message, file=str(temp_path))
-                    except Exception as retry_exc:
-                        logger.error(f"Error downloading Telethon media after FloodWait: {retry_exc}")
-                        return None
-            except ImportError:
-                pass
-
-            logger.error(f"Error downloading Telethon media: {exc}")
+            logger.error(f"Error processing Telethon media: {exc}")
             return None
 
         finally:
@@ -2141,6 +2219,7 @@ class MediaScraper:
                 ),
             )
 
+            assert client is not None
             if not await client.is_user_authorized():
                 logger.warning(
                     "Telegram API client is not authorized. Falling back to public web scraping."
@@ -2257,7 +2336,7 @@ class MediaScraper:
                 await self.add_seed(client, seed, depth=0)
 
             while True:
-                depth = self.storage.get_min_pending_depth(max_depth=self.cfg.max_depth)
+                depth = self.storage.get_min_pending_depth()
 
                 if depth is None:
                     break
@@ -2320,28 +2399,29 @@ class MediaScraper:
             and self.cfg.telegram_api.get("api_hash")
         )
 
-        try:
-            if use_api and api_configured:
-                api_targets = [s for s in seeds if "telegra.ph" not in s.lower()]
+        if use_api and api_configured:
+            api_targets = [s for s in seeds if "telegra.ph" not in s.lower()]
 
-                if api_targets:
-                    logger.info(
-                        "Telegram API credentials detected. Attempting API scraper..."
-                    )
-                    api_success = await self.run_api_scraper(api_targets)
-                    if not api_success:
-                        logger.info(
-                            "Proceeding with public web scraper fallback for all seeds."
-                        )
-            else:
+            if api_targets:
                 logger.info(
-                    "Telegram API credentials not configured. Falling back to public web scraping (no login required)."
+                    "Telegram API credentials detected. Attempting API scraper..."
                 )
+                api_success = await self.run_api_scraper(api_targets)
+                if not api_success:
+                    logger.info(
+                        "Proceeding with public web scraper fallback for all seeds."
+                    )
+        elif not use_api:
+            logger.info(
+                "Telegram API mode disabled by user (--no-api). Using public web scraping."
+            )
+        else:
+            logger.info(
+                "Telegram API credentials not configured. Falling back to public web scraping (no login required)."
+            )
 
-            logger.info("Starting web crawler engine...")
-            await self.run_web_crawler(seeds)
-        finally:
-            self.storage.close()
+        logger.info("Starting web crawler engine...")
+        await self.run_web_crawler(seeds)
 
 
 def load_seed_files(paths: Iterable[Path]) -> list[str]:
@@ -2462,6 +2542,12 @@ async def async_main() -> None:
     )
 
     parser.add_argument(
+        "--force-crawl",
+        action="store_true",
+        help="Re-crawl provided seed URLs even if already marked crawled in database.",
+    )
+
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug logging.",
@@ -2469,8 +2555,7 @@ async def async_main() -> None:
 
     args = parser.parse_args()
 
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
+    setup_logging(args.verbose)
 
     cfg = ScraperConfig.load(args.config)
 
@@ -2499,76 +2584,80 @@ async def async_main() -> None:
     if args.include_discovered:
         cfg.include_discovered = True
 
-    scraper = MediaScraper(cfg)
+    async with MediaScraper(cfg) as scraper:
+        if args.reset_queue:
+            scraper.storage.clear_queue()
+            logger.info("Cleared crawl queue.")
 
-    if args.reset_queue:
-        scraper.storage.clear_queue()
-        logger.info("Cleared crawl queue.")
+        seed_paths = [args.seeds]
 
-    seed_paths = [args.seeds]
+        if cfg.include_discovered and not args.no_discovered:
+            seed_paths.append(cfg.discovered_seeds_file)
 
-    if cfg.include_discovered and not args.no_discovered:
-        seed_paths.append(cfg.discovered_seeds_file)
+        seeds = load_seed_files(seed_paths)
 
-    seeds = load_seed_files(seed_paths)
+        if args.extra_seeds:
+            seeds.extend(args.extra_seeds)
 
-    if args.extra_seeds:
-        seeds.extend(args.extra_seeds)
+        if args.discover or cfg.discovery_enabled:
+            keywords = list(cfg.keywords)
 
-    if args.discover or cfg.discovery_enabled:
-        keywords = list(cfg.keywords)
+            if args.keywords:
+                keywords = [k.strip() for k in args.keywords.split(",") if k.strip()]
 
-        if args.keywords:
-            keywords = [k.strip() for k in args.keywords.split(",") if k.strip()]
+            logger.info(f"Running discovery for keywords: {keywords}")
 
-        logger.info(f"Running discovery for keywords: {keywords}")
-
-        discovered_telegraph, discovered_telegram = await scraper.run_discovery(
-            keywords
-        )
-
-        discovered = sorted(discovered_telegraph | discovered_telegram)
-        seeds.extend(discovered)
-
-        logger.info(f"Discovery added {len(discovered)} seeds.")
-
-    # Deduplicate while preserving order
-    unique_seeds: list[str] = []
-    seen: set[str] = set()
-
-    for seed in seeds:
-        if seed not in seen:
-            seen.add(seed)
-            unique_seeds.append(seed)
-
-    pending_depth = scraper.storage.get_min_pending_depth(max_depth=cfg.max_depth)
-
-    if not unique_seeds and pending_depth is None:
-        if not args.seeds.exists() and Path("seeds.txt.example").exists():
-            logger.warning(
-                f"Seed file '{args.seeds}' does not exist, but 'seeds.txt.example' was found. "
-                f"Copy 'seeds.txt.example' to '{args.seeds}' or provide seeds via CLI arguments."
+            discovered_telegraph, discovered_telegram = await scraper.run_discovery(
+                keywords
             )
-        else:
-            logger.warning(
-                "No seeds found and no pending crawl queue. "
-                "Provide seeds via file, CLI args, discovery, or previous discovered seeds."
-            )
-        sys.exit(0)
 
-    if not unique_seeds and pending_depth is not None:
-        logger.info("No new seeds provided, but pending crawl queue found. Resuming...")
+            discovered = sorted(discovered_telegraph | discovered_telegram)
+            seeds.extend(discovered)
 
-    await scraper.run(unique_seeds, use_api=not args.no_api)
+            logger.info(f"Discovery added {len(discovered)} seeds.")
 
-    total = scraper.storage.count_downloaded_hashes()
+        # Deduplicate while preserving order
+        unique_seeds: list[str] = []
+        seen: set[str] = set()
 
-    logger.info("=" * 60)
-    logger.info("Scraping run completed.")
-    logger.info(f"Total unique media records in database: {total}")
-    logger.info(f"Downloads directory: {scraper.cfg.download_dir.resolve()}")
-    logger.info(f"Discovered seeds file: {scraper.cfg.discovered_seeds_file.resolve()}")
-    logger.info("=" * 60)
+        for seed in seeds:
+            if seed not in seen:
+                seen.add(seed)
+                unique_seeds.append(seed)
+
+        pending_depth = scraper.storage.get_min_pending_depth(cfg.max_depth)
+
+        if not unique_seeds and pending_depth is None:
+            if not args.seeds.exists() and Path("seeds.txt.example").exists():
+                logger.warning(
+                    f"Seed file '{args.seeds}' does not exist, but 'seeds.txt.example' was found. "
+                    f"Copy 'seeds.txt.example' to '{args.seeds}' or provide seeds via CLI arguments."
+                )
+            else:
+                logger.warning(
+                    "No seeds found and no pending crawl queue. "
+                    "Provide seeds via file, CLI args, discovery, or previous discovered seeds."
+                )
+            return
+
+        if not unique_seeds and pending_depth is not None:
+            logger.info("No new seeds provided, but pending crawl queue found. Resuming...")
+
+        if args.force_crawl and unique_seeds:
+            logger.info("Force crawl enabled: resetting crawl status for provided seeds.")
+            for seed_val in unique_seeds:
+                scraper.storage.uncrawl_seed(seed_val)
+
+        await scraper.run(unique_seeds, use_api=not args.no_api)
+
+        total = scraper.storage.count_downloaded_hashes()
+
+        logger.info("=" * 60)
+        logger.info("Scraping run completed.")
+        logger.info(f"Total unique media records in database: {total}")
+        logger.info(f"Downloads directory: {scraper.cfg.download_dir.resolve()}")
+        logger.info(f"Discovered seeds file: {scraper.cfg.discovered_seeds_file.resolve()}")
+        logger.info("=" * 60)
 
 
 def main() -> None:

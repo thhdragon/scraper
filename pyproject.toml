@@ -1,7 +1,7 @@
 [project]
 name = "scapper"
 version = "0.1.0"
-description = "Add your description here"
+description = "High-performance Telegram and Telegra.ph media crawler and scraper"
 readme = "README.md"
 authors = [
     { name = "Tyler", email = "thhdragon@gmail.com" }
@@ -12,6 +12,13 @@ dependencies = [
     "httpx>=0.28.1",
     "telethon>=1.45.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pyrefly",
+    "ruff",
+]
+
 
 [project.scripts]
 scapper = "scapper.scraper:main"
