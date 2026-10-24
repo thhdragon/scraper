@@ -3,16 +3,28 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from scapper.scraper import (
+from scapper.config import ScraperConfig
+from scapper.constants import (
     TELEGRAM_MENTION_RE,
     TELEGRAM_RESERVED,
     TELEGRAPH_RESERVED,
     TELEGRAPH_URL_RE,
-    MediaScraper,
-    ScraperConfig,
-    Storage,
-    detect_media_type_from_bytes,
 )
+from scapper.discovery import unwrap_ddg
+from scapper.downloader import download_file
+from scapper.storage import Storage
+from scapper.telegram_api import download_telethon_media
+from scapper.telegram_web import scrape_telegram_web_preview
+from scapper.telegraph import scrape_telegraph_page
+from scapper.urls import (
+    extract_base_slug,
+    extract_chat_username,
+    normalize_telegram_url,
+    normalize_telegraph_url,
+    slugify_telegram_candidates,
+    slugify_telegraph_candidates,
+)
+from scapper.utils import detect_media_type_from_bytes
 
 
 class TestReservedAndRegex(unittest.TestCase):
@@ -34,24 +46,19 @@ class TestReservedAndRegex(unittest.TestCase):
         self.assertEqual(m3.group(1), "My-Story-Title-01-02")
 
     def test_telegraph_url_re_finditer_discovery(self):
-        # Critical regression check:
-        # re.finditer provides group(0) as full URL for normalization,
-        # while re.findall returns only group(1) (the slug).
         text = "Check out https://telegra.ph/sample-article-10-24 for updates."
         matches = list(TELEGRAPH_URL_RE.finditer(text))
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].group(0), "https://telegra.ph/sample-article-10-24")
         self.assertEqual(matches[0].group(1), "sample-article-10-24")
 
-        normalized = MediaScraper.normalize_telegraph_url(matches[0].group(0))
+        normalized = normalize_telegraph_url(matches[0].group(0))
         self.assertEqual(normalized, "https://telegra.ph/sample-article-10-24")
 
     def test_telegram_mention_re(self):
-        # Test mentions inside brackets, quotes, and standard text
         self.assertEqual(TELEGRAM_MENTION_RE.findall("Check [@my_channel] now"), ["my_channel"])
         self.assertEqual(TELEGRAM_MENTION_RE.findall('Quote: "@my_channel"'), ["my_channel"])
         self.assertEqual(TELEGRAM_MENTION_RE.findall("(@my_channel)"), ["my_channel"])
-        # Email addresses must NOT match
         self.assertEqual(TELEGRAM_MENTION_RE.findall("contact@my_channel.com"), [])
 
     def test_telegram_reserved_words(self):
@@ -65,44 +72,33 @@ class TestReservedAndRegex(unittest.TestCase):
 class TestSlugifiersAndNormalizers(unittest.TestCase):
     def test_slugify_telegram_candidates_url(self):
         url = "https://t.me/s/cool_channel?before=100"
-        candidates = MediaScraper.slugify_telegram_candidates(url)
+        candidates = slugify_telegram_candidates(url)
         self.assertIn("cool_channel", candidates)
         self.assertNotIn("100", candidates)
 
     def test_slugify_telegram_candidates_message_permalink(self):
-        # Permalinks with message ID must extract the channel username, not message ID
         url = "https://t.me/s/cool_channel/456"
-        candidates = MediaScraper.slugify_telegram_candidates(url)
+        candidates = slugify_telegram_candidates(url)
         self.assertIn("cool_channel", candidates)
         self.assertNotIn("456", candidates)
 
         url_no_s = "https://t.me/cool_channel/789"
-        candidates_no_s = MediaScraper.slugify_telegram_candidates(url_no_s)
+        candidates_no_s = slugify_telegram_candidates(url_no_s)
         self.assertIn("cool_channel", candidates_no_s)
 
     def test_extract_chat_username(self):
-        with tempfile.TemporaryDirectory() as td:
-            cfg = ScraperConfig(
-                db_path=Path(td) / "test.db",
-                discovered_seeds_file=Path(td) / "seeds.txt",
-            )
-            scraper = MediaScraper(cfg)
-            try:
-                # Reserved words must be rejected
-                self.assertIsNone(scraper._extract_chat_username("contact"))
-                self.assertIsNone(scraper._extract_chat_username("https://t.me/about"))
+        # Reserved words must be rejected
+        self.assertIsNone(extract_chat_username("contact"))
+        self.assertIsNone(extract_chat_username("https://t.me/about"))
 
-                # Valid channels and custom domains must succeed
-                self.assertEqual(scraper._extract_chat_username("durov"), "durov")
-                self.assertEqual(scraper._extract_chat_username("https://t.me/s/durov/123"), "durov")
-                self.assertEqual(scraper._extract_chat_username("https://telegram.dog/durov"), "durov")
-            finally:
-                scraper.storage.close()
+        # Valid channels and custom domains must succeed
+        self.assertEqual(extract_chat_username("durov"), "durov")
+        self.assertEqual(extract_chat_username("https://t.me/s/durov/123"), "durov")
+        self.assertEqual(extract_chat_username("https://telegram.dog/durov"), "durov")
 
     def test_unwrap_ddg(self):
-        # Root-relative DDG links must be unwrapped
         rel_href = "/l/?uddg=https%3A%2F%2Ftelegra.ph%2Fmy-post&rut=123"
-        unwrapped = MediaScraper._unwrap_ddg(rel_href)
+        unwrapped = unwrap_ddg(rel_href)
         self.assertEqual(unwrapped, "https://telegra.ph/my-post")
 
     def test_detect_media_type_from_bytes(self):
@@ -114,27 +110,27 @@ class TestSlugifiersAndNormalizers(unittest.TestCase):
         self.assertIsNone(detect_media_type_from_bytes(b"<html>hello</html>"))
 
     def test_slugify_telegram_candidates_reserved(self):
-        self.assertEqual(MediaScraper.slugify_telegram_candidates("contact"), [])
-        self.assertEqual(MediaScraper.slugify_telegram_candidates("https://t.me/s/about"), [])
+        self.assertEqual(slugify_telegram_candidates("contact"), [])
+        self.assertEqual(slugify_telegram_candidates("https://t.me/s/about"), [])
 
     def test_slugify_telegraph_candidates_url(self):
         url = "https://telegra.ph/some-great-title-10-24?ref=1"
-        candidates = MediaScraper.slugify_telegraph_candidates(url)
+        candidates = slugify_telegraph_candidates(url)
         self.assertIn("some-great-title-10-24", candidates)
 
     def test_slugify_telegraph_candidates_reserved(self):
-        self.assertEqual(MediaScraper.slugify_telegraph_candidates("file"), [])
-        self.assertEqual(MediaScraper.slugify_telegraph_candidates("https://telegra.ph/upload"), [])
+        self.assertEqual(slugify_telegraph_candidates("file"), [])
+        self.assertEqual(slugify_telegraph_candidates("https://telegra.ph/upload"), [])
 
     def test_normalize_telegraph_url(self):
-        self.assertIsNone(MediaScraper.normalize_telegraph_url("https://telegra.ph/file/pic.png"))
-        self.assertIsNone(MediaScraper.normalize_telegraph_url("https://telegra.ph/upload"))
+        self.assertIsNone(normalize_telegraph_url("https://telegra.ph/file/pic.png"))
+        self.assertIsNone(normalize_telegraph_url("https://telegra.ph/upload"))
         self.assertEqual(
-            MediaScraper.normalize_telegraph_url("https://telegra.ph/valid-slug-01-01"),
+            normalize_telegraph_url("https://telegra.ph/valid-slug-01-01"),
             "https://telegra.ph/valid-slug-01-01",
         )
         self.assertEqual(
-            MediaScraper.normalize_telegraph_url("https://www.telegra.ph/valid-slug-01-01"),
+            normalize_telegraph_url("https://www.telegra.ph/valid-slug-01-01"),
             "https://telegra.ph/valid-slug-01-01",
         )
 
@@ -151,102 +147,62 @@ class TestStorage(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_reusable_connection_and_close(self):
-        self.assertIsNotNone(self.storage._conn)
-        self.storage.record_downloaded_hash("hash123", Path("/path/to/file.jpg"))
-        self.assertTrue(self.storage.has_hash_downloaded("hash123"))
-        self.assertFalse(self.storage.has_hash_downloaded("hash999"))
+        c1 = self.storage._get_conn()
+        c2 = self.storage._get_conn()
+        self.assertIs(c1, c2)
+        self.storage.close()
+        self.assertIsNone(self.storage._conn)
 
     def test_downloaded_media_urls_cache(self):
-        url = "https://telegra.ph/file/test_image.jpg"
+        url = "https://telegra.ph/file/abc12345.jpg"
         self.assertFalse(self.storage.has_media_url_downloaded(url))
-        self.storage.record_downloaded_media_url(url, "hash123")
+        self.storage.record_downloaded_media_url(url, "somehash123")
         self.assertTrue(self.storage.has_media_url_downloaded(url))
 
     def test_discovered_seeds_reserved_filtering(self):
-        # Adding reserved name should be rejected
         self.storage.add_discovered_seed("contact")
-        self.storage.add_discovered_seed("file")
+        self.storage.add_discovered_seed("upload")
+        self.storage.add_discovered_seed("durov")
         seeds = self.storage.get_discovered_seeds()
         self.assertNotIn("contact", seeds)
-        self.assertNotIn("file", seeds)
-
-        # Valid seed should be accepted
-        self.storage.add_discovered_seed("legit_channel")
-        seeds = self.storage.get_discovered_seeds()
-        self.assertIn("legit_channel", seeds)
+        self.assertNotIn("upload", seeds)
+        self.assertIn("durov", seeds)
 
     def test_clean_discovered_seeds(self):
-        with open(self.seeds_file, "w") as f:
-            f.write("contact\nlegit_channel\nfile\nupload\nanother_channel\n")
-
-        self.storage.clean_discovered_seeds()
-
-        with open(self.seeds_file) as f:
-            lines = [line.strip() for line in f if line.strip()]
-
-        self.assertNotIn("contact", lines)
-        self.assertNotIn("file", lines)
-        self.assertNotIn("upload", lines)
-        self.assertIn("legit_channel", lines)
-        self.assertIn("another_channel", lines)
+        self.seeds_file.write_text("contact\nupload\ndurov\nDUROV\ndurov\n", encoding="utf-8")
+        count = self.storage.clean_discovered_seeds()
+        self.assertEqual(count, 1)
+        cleaned = self.seeds_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(cleaned, ["durov"])
 
     def test_clean_discovered_seeds_case_insensitive(self):
-        with open(self.seeds_file, "w") as f:
-            f.write("MyChannel\nmychannel\nMYCHANNEL\n")
-
-        self.storage.clean_discovered_seeds()
-
-        with open(self.seeds_file) as f:
-            lines = [line.strip() for line in f if line.strip()]
-
-        self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0].lower(), "mychannel")
+        self.seeds_file.write_text("TechNews\ntechnews\nTECHNEWS\n", encoding="utf-8")
+        count = self.storage.clean_discovered_seeds()
+        self.assertEqual(count, 1)
+        cleaned = self.seeds_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(cleaned, ["technews"])
 
     def test_storage_init_creates_subdirectories(self):
-        nested_dir = Path(self.temp_dir.name) / "nested" / "sub"
-        db_file = nested_dir / "cache.db"
-        seeds_file = nested_dir / "discovered.txt"
-        storage = Storage(db_file, seeds_file)
-        self.assertTrue(nested_dir.exists())
-        self.assertTrue(db_file.exists())
-        storage.close()
+        sub_dir = Path(self.temp_dir.name) / "sub1" / "sub2"
+        db = sub_dir / "test.db"
+        seeds = sub_dir / "seeds.txt"
+        s = Storage(db, seeds)
+        self.assertTrue(db.exists())
+        self.assertTrue(sub_dir.exists())
+        s.close()
 
     def test_min_pending_depth_with_max_depth(self):
-        self.storage.enqueue("https://t.me/s/ch1", "telegram", depth=1)
-        self.storage.enqueue("https://t.me/s/ch2", "telegram", depth=5)
+        self.storage.enqueue("https://t.me/s/ch1", "telegram", 0)
+        self.storage.enqueue("https://t.me/s/ch2", "telegram", 3)
+        self.storage.enqueue("https://t.me/s/ch3", "telegram", 5)
 
-        # When max_depth is 3, min pending depth within limit should be 1
-        min_depth = self.storage.get_min_pending_depth(max_depth=3)
-        self.assertEqual(min_depth, 1)
-
-        # Crawl depth 1: remove from queue and mark crawled
+        self.assertEqual(self.storage.get_min_pending_depth(max_depth=2), 0)
         self.storage.remove_from_queue("https://t.me/s/ch1")
-        self.storage.mark_url_crawled("https://t.me/s/ch1")
-
-        # Now only depth 5 is pending, but max_depth is 3, so should return None
-        min_depth_exceeded = self.storage.get_min_pending_depth(max_depth=3)
-        self.assertIsNone(min_depth_exceeded)
-
-        # If max_depth is 10, should return 5
-        self.assertEqual(self.storage.get_min_pending_depth(max_depth=10), 5)
+        self.assertIsNone(self.storage.get_min_pending_depth(max_depth=2))
+        self.assertEqual(self.storage.get_min_pending_depth(max_depth=4), 3)
 
 
 class TestHtmlParsing(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "test_parser.db"
-        self.seeds_file = Path(self.temp_dir.name) / "seeds.txt"
-        self.cfg = ScraperConfig(
-            db_path=self.db_path,
-            discovered_seeds_file=self.seeds_file,
-            download_dir=Path(self.temp_dir.name) / "downloads",
-        )
-        self.scraper = MediaScraper(self.cfg)
-
-    def tearDown(self):
-        self.scraper.storage.close()
-        self.temp_dir.cleanup()
-
     async def test_telegraph_parsing_authors_and_scripts(self):
         html = """
         <!DOCTYPE html>
@@ -276,22 +232,17 @@ class TestHtmlParsing(unittest.IsolatedAsyncioTestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.text = html
-        self.scraper._fetch = AsyncMock(return_value=mock_resp)
 
-        media_urls, tg_urls, _ph_urls = await self.scraper.scrape_telegraph_page(
-            MagicMock(), "https://telegra.ph/test-article-10-24"
+        media_urls, tg_urls, _ph_urls = await scrape_telegraph_page(
+            MagicMock(), "https://telegra.ph/test-article-10-24", fetch_fn=AsyncMock(return_value=mock_resp)
         )
 
-        # Check media extracted including <img> and <a> media
         self.assertIn("https://telegra.ph/file/image1.jpg", media_urls)
         self.assertIn("https://telegra.ph/file/video1.mp4", media_urls)
-
-        # Check telegram links extracted
         self.assertIn("https://t.me/s/author_channel", tg_urls)
         self.assertIn("https://t.me/s/linked_channel", tg_urls)
 
     async def test_telegram_web_preview_no_self_reference_loops(self):
-        # A preview page for channel "mychannel" contains message permalinks /s/mychannel/101
         html = """
         <div class="tgme_page_wrap">
             <div class="tgme_header_title">My Channel</div>
@@ -314,10 +265,9 @@ class TestHtmlParsing(unittest.IsolatedAsyncioTestCase):
         mock_resp.status_code = 200
         mock_resp.url = "https://t.me/s/mychannel"
         mock_resp.text = html
-        self.scraper._fetch = AsyncMock(return_value=mock_resp)
 
-        media_urls, ph_urls, tg_urls, before_url = await self.scraper.scrape_telegram_web_preview(
-            MagicMock(), "https://t.me/s/mychannel"
+        media_urls, ph_urls, tg_urls, before_url = await scrape_telegram_web_preview(
+            MagicMock(), "https://t.me/s/mychannel", fetch_fn=AsyncMock(return_value=mock_resp)
         )
 
         self.assertIn("https://cdn.telegram.org/file1.jpg", media_urls)
@@ -328,7 +278,6 @@ class TestHtmlParsing(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://telegra.ph/article-title-10-24", ph_urls)
 
     async def test_telegram_web_preview_case_insensitive_pagination_discard(self):
-        # Mixed-case channel name in pagination link must be discarded from discovered channels
         html = """
         <div class="tgme_page_wrap">
             <div class="tgme_widget_message_wrap">
@@ -347,10 +296,9 @@ class TestHtmlParsing(unittest.IsolatedAsyncioTestCase):
         mock_resp.status_code = 200
         mock_resp.url = "https://t.me/s/MyChannel"
         mock_resp.text = html
-        self.scraper._fetch = AsyncMock(return_value=mock_resp)
 
-        _, _, tg_urls, before_url = await self.scraper.scrape_telegram_web_preview(
-            MagicMock(), "https://t.me/s/MyChannel"
+        _, _, tg_urls, before_url = await scrape_telegram_web_preview(
+            MagicMock(), "https://t.me/s/MyChannel", fetch_fn=AsyncMock(return_value=mock_resp)
         )
         self.assertEqual(before_url, "https://t.me/s/MyChannel?before=200")
         self.assertNotIn("https://t.me/s/mychannel", tg_urls)
@@ -358,15 +306,13 @@ class TestHtmlParsing(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("https://t.me/s/mychannel?before=200", tg_urls)
 
     async def test_telegram_web_preview_redirect_skipped(self):
-        # When channel does not exist, Telegram redirects to telegram.org
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.url = "https://telegram.org/"
         mock_resp.text = "<html><body>Telegram Messenger</body></html>"
-        self.scraper._fetch = AsyncMock(return_value=mock_resp)
 
-        media_urls, ph_urls, tg_urls, before = await self.scraper.scrape_telegram_web_preview(
-            MagicMock(), "https://t.me/s/nonexistent_channel"
+        media_urls, ph_urls, tg_urls, before = await scrape_telegram_web_preview(
+            MagicMock(), "https://t.me/s/nonexistent_channel", fetch_fn=AsyncMock(return_value=mock_resp)
         )
         self.assertEqual(media_urls, [])
         self.assertEqual(ph_urls, set())
@@ -387,51 +333,56 @@ class TestHtmlParsing(unittest.IsolatedAsyncioTestCase):
         mock_resp.status_code = 200
         mock_resp.url = "https://t.me/s/mychannel"
         mock_resp.text = html
-        self.scraper._fetch = AsyncMock(return_value=mock_resp)
 
-        media_urls, _, _, _ = await self.scraper.scrape_telegram_web_preview(
-            MagicMock(), "https://t.me/s/mychannel"
+        media_urls, _, _, _ = await scrape_telegram_web_preview(
+            MagicMock(), "https://t.me/s/mychannel", fetch_fn=AsyncMock(return_value=mock_resp)
         )
         self.assertIn("https://cdn.telesco.pe/file/thumb1.jpg", media_urls)
 
     async def test_telethon_flood_wait_retry_success(self):
-        # Verify that FloodWait retry succeeds and returns the file path rather than deleting it
         from telethon.errors import FloodWaitError
 
-        client = MagicMock()
-        temp_dir = Path(self.temp_dir.name)
-        download_target = temp_dir / "sample_video.mp4"
-        download_target.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"A" * 200000)
+        with tempfile.TemporaryDirectory() as td:
+            temp_dir = Path(td)
+            cfg = ScraperConfig(download_dir=temp_dir / "downloads")
+            cfg.download_dir.mkdir(parents=True, exist_ok=True)
+            storage = Storage(temp_dir / "test.db", temp_dir / "seeds.txt")
 
-        calls = 0
+            client = MagicMock()
+            download_target = temp_dir / "sample_video.mp4"
+            download_target.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"A" * 200000)
 
-        async def mock_download_media(msg, file):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                raise FloodWaitError(request=None, capture=0)
-            return str(download_target)
+            calls = 0
 
-        client.download_media = AsyncMock(side_effect=mock_download_media)
-        msg = MagicMock()
-        msg.document = MagicMock()
-        msg.document.size = 200000
-        msg.document.mime_type = "video/mp4"
+            async def mock_download_media(msg, file):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise FloodWaitError(request=None, capture=0)
+                return str(download_target)
 
-        result = await self.scraper.download_telethon_media(client, msg)
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(calls, 2)
-        self.assertTrue(result.exists())
-        self.assertTrue(self.scraper.storage.has_hash_downloaded(result.stem))
+            client.download_media = AsyncMock(side_effect=mock_download_media)
+            msg = MagicMock()
+            msg.document = MagicMock()
+            msg.document.size = 200000
+            msg.document.mime_type = "video/mp4"
+
+            try:
+                result = await download_telethon_media(client, msg, cfg, storage)
+                self.assertIsNotNone(result)
+                assert result is not None
+                self.assertEqual(calls, 2)
+                self.assertTrue(result.exists())
+                self.assertTrue(storage.has_hash_downloaded(result.stem))
+            finally:
+                storage.close()
 
 
 class TestBugFixesAndImprovements(unittest.IsolatedAsyncioTestCase):
     def test_extract_base_slug_preserves_numbers(self):
-        # Slug names like top-10 and part-01 must NOT have numbers stripped
-        self.assertEqual(MediaScraper.extract_base_slug("top-10"), "top-10")
-        self.assertEqual(MediaScraper.extract_base_slug("part-01"), "part-01")
-        self.assertEqual(MediaScraper.extract_base_slug("https://telegra.ph/article-title-10-24"), "article-title")
+        self.assertEqual(extract_base_slug("top-10"), "top-10")
+        self.assertEqual(extract_base_slug("part-01"), "part-01")
+        self.assertEqual(extract_base_slug("https://telegra.ph/article-title-10-24"), "article-title")
 
     def test_probed_base_slugs_case_insensitive(self):
         with tempfile.TemporaryDirectory() as td:
@@ -471,63 +422,42 @@ class TestBugFixesAndImprovements(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(cfg.web_delay_max, 3.0)
 
     def test_telegram_three_character_usernames(self):
-        # Collectible/short Telegram usernames (3 chars) must be accepted
-        self.assertEqual(
-            MediaScraper.normalize_telegram_url("https://t.me/s/ton"),
-            "https://t.me/s/ton",
-        )
-        self.assertEqual(
-            MediaScraper.normalize_telegram_url("https://t.me/dog"),
-            "https://t.me/s/dog",
-        )
-        self.assertEqual(MediaScraper.slugify_telegram_candidates("ton"), ["ton"])
+        self.assertEqual(normalize_telegram_url("https://t.me/s/ton"), "https://t.me/s/ton")
+        self.assertEqual(normalize_telegram_url("https://t.me/dog"), "https://t.me/s/dog")
+        self.assertEqual(slugify_telegram_candidates("ton"), ["ton"])
         self.assertEqual(
             TELEGRAM_MENTION_RE.findall("Join @dog and @btc now!"),
             ["dog", "btc"],
         )
 
     def test_detect_media_type_mkv_and_m4a(self):
-        # MKV detection via EBML with matroska doc-type
         mkv_bytes = (
             b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\xf7\x81\x01\x42\xf2\x81\x04"
             b"\x42\xf3\x81\x08\x42\x82\x88matroska"
         )
-        self.assertEqual(
-            detect_media_type_from_bytes(mkv_bytes),
-            ("video/x-matroska", ".mkv"),
-        )
+        self.assertEqual(detect_media_type_from_bytes(mkv_bytes), ("video/x-matroska", ".mkv"))
 
-        # Standard WebM
         webm_bytes = b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\x82\x84webm"
-        self.assertEqual(
-            detect_media_type_from_bytes(webm_bytes),
-            ("video/webm", ".webm"),
-        )
+        self.assertEqual(detect_media_type_from_bytes(webm_bytes), ("video/webm", ".webm"))
 
-        # M4A audio in ftyp
         m4a_bytes = b"\x00\x00\x00\x20ftypM4A \x00\x00\x00\x00"
-        self.assertEqual(
-            detect_media_type_from_bytes(m4a_bytes),
-            ("audio/mp4", ".m4a"),
-        )
+        self.assertEqual(detect_media_type_from_bytes(m4a_bytes), ("audio/mp4", ".m4a"))
 
     def test_normalize_telegram_url_query_validation(self):
-        # Valid numeric query params should be kept
         self.assertEqual(
-            MediaScraper.normalize_telegram_url("https://t.me/s/channel?before=150"),
+            normalize_telegram_url("https://t.me/s/channel?before=150"),
             "https://t.me/s/channel?before=150",
         )
-        # Invalid non-numeric or <= 0 params should be stripped
         self.assertEqual(
-            MediaScraper.normalize_telegram_url("https://t.me/s/channel?before=null"),
+            normalize_telegram_url("https://t.me/s/channel?before=null"),
             "https://t.me/s/channel",
         )
         self.assertEqual(
-            MediaScraper.normalize_telegram_url("https://t.me/s/channel?before=0"),
+            normalize_telegram_url("https://t.me/s/channel?before=0"),
             "https://t.me/s/channel",
         )
         self.assertEqual(
-            MediaScraper.normalize_telegram_url("https://t.me/s/channel?before=-5"),
+            normalize_telegram_url("https://t.me/s/channel?before=-5"),
             "https://t.me/s/channel",
         )
 
@@ -538,7 +468,8 @@ class TestBugFixesAndImprovements(unittest.IsolatedAsyncioTestCase):
                 discovered_seeds_file=Path(td) / "seeds.txt",
                 download_dir=Path(td) / "downloads",
             )
-            scraper = MediaScraper(cfg)
+            cfg.download_dir.mkdir(parents=True, exist_ok=True)
+            storage = Storage(cfg.db_path, cfg.discovered_seeds_file)
             try:
                 mock_client = MagicMock()
                 mock_resp = AsyncMock()
@@ -558,12 +489,11 @@ class TestBugFixesAndImprovements(unittest.IsolatedAsyncioTestCase):
                 mock_client.stream = fake_stream
 
                 url = "https://telegra.ph/file/not_a_photo.jpg"
-                res = await scraper.download_file(mock_client, url)
+                res = await download_file(mock_client, url, cfg, storage)
                 self.assertIsNone(res)
-                # Ensure the skipped URL was cached
-                self.assertTrue(scraper.storage.has_media_url_downloaded(url))
+                self.assertTrue(storage.has_media_url_downloaded(url))
             finally:
-                scraper.storage.close()
+                storage.close()
 
     async def test_telethon_flood_wait_excessive_skipped(self):
         from telethon.errors import FloodWaitError
@@ -574,7 +504,8 @@ class TestBugFixesAndImprovements(unittest.IsolatedAsyncioTestCase):
                 discovered_seeds_file=Path(td) / "seeds.txt",
                 download_dir=Path(td) / "downloads",
             )
-            scraper = MediaScraper(cfg)
+            cfg.download_dir.mkdir(parents=True, exist_ok=True)
+            storage = Storage(cfg.db_path, cfg.discovered_seeds_file)
             try:
                 client = MagicMock()
                 client.download_media = AsyncMock(
@@ -584,10 +515,10 @@ class TestBugFixesAndImprovements(unittest.IsolatedAsyncioTestCase):
                 msg.document = None
                 msg.photo = MagicMock()
 
-                res = await scraper.download_telethon_media(client, msg)
+                res = await download_telethon_media(client, msg, cfg, storage)
                 self.assertIsNone(res)
             finally:
-                scraper.storage.close()
+                storage.close()
 
 
 if __name__ == "__main__":
