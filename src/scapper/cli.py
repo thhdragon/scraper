@@ -8,7 +8,13 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from scapper.config import ScraperConfig
+from scapper.constants import TELEGRAM_URL_RE
 from scapper.engine import MediaScraper
+from scapper.urls import (
+    canonicalize_seed,
+    normalize_telegram_url,
+    normalize_telegraph_url,
+)
 from scapper.utils import setup_logging
 
 logger = logging.getLogger("scraper")
@@ -140,6 +146,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--reset-crawled",
+        action="store_true",
+        help="Clear already crawled URLs history in database (allows re-crawling without losing downloaded media cache).",
+    )
+
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        help="Override HTTP request timeout in seconds.",
+    )
+
+    parser.add_argument(
+        "--max-connections",
+        type=int,
+        help="Override maximum concurrent HTTP connections.",
+    )
+
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug logging.",
@@ -175,6 +199,14 @@ async def async_main() -> None:
         else:
             logger.info(f"Overridden max depth: {cfg.max_web_depth}")
 
+    if args.timeout is not None:
+        cfg.request_timeout = max(1.0, args.timeout)
+        logger.info(f"Overridden request timeout: {cfg.request_timeout}s")
+
+    if args.max_connections is not None:
+        cfg.max_connections = max(1, args.max_connections)
+        logger.info(f"Overridden max connections: {cfg.max_connections}")
+
     if args.probe_dates:
         cfg.probe_telegraph_dates = True
         logger.info("Enabled aggressive Telegraph date probing.")
@@ -183,6 +215,10 @@ async def async_main() -> None:
         cfg.include_discovered = True
 
     async with MediaScraper(cfg) as scraper:
+        if args.reset_crawled:
+            scraper.storage.clear_crawled_urls()
+            logger.info("Cleared crawled URLs history in database.")
+
         if args.reset_queue:
             scraper.storage.clear_queue()
             logger.info("Cleared crawl queue.")
@@ -214,14 +250,40 @@ async def async_main() -> None:
 
             logger.info(f"Discovery added {len(discovered)} seeds.")
 
-        # Deduplicate while preserving order
+        # Deduplicate while preserving order using canonical representation
         unique_seeds: list[str] = []
         seen: set[str] = set()
 
         for seed in seeds:
-            if seed not in seen:
-                seen.add(seed)
-                unique_seeds.append(seed)
+            s_clean = seed.strip()
+            if not s_clean or s_clean.startswith("#"):
+                continue
+
+            # Preserve distinct dated Telegra.ph articles
+            norm_ph = normalize_telegraph_url(s_clean)
+            if norm_ph:
+                key = f"telegraph:{norm_ph.lower()}"
+                if key not in seen:
+                    seen.add(key)
+                    unique_seeds.append(norm_ph)
+                continue
+
+            # Normalize Telegram URLs and handles
+            norm_tg = normalize_telegram_url(s_clean)
+            if not norm_tg and s_clean.startswith("@"):
+                norm_tg = normalize_telegram_url(f"https://t.me/{s_clean.lstrip('@')}")
+
+            if norm_tg:
+                m_tg = TELEGRAM_URL_RE.match(norm_tg)
+                ch_key = m_tg.group(1).lower() if m_tg else norm_tg.lower()
+                key = f"telegram:{ch_key}"
+            else:
+                canonical = canonicalize_seed(s_clean) or s_clean.lower()
+                key = f"seed:{canonical.lower()}"
+
+            if key not in seen:
+                seen.add(key)
+                unique_seeds.append(s_clean)
 
         pending_depth = scraper.storage.get_min_pending_depth(cfg.max_depth)
 

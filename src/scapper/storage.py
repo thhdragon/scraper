@@ -6,14 +6,13 @@ import sqlite3
 import typing
 from pathlib import Path
 
-from scapper.constants import (
-    TELEGRAM_DOMAINS,
-    TELEGRAM_RESERVED,
-    TELEGRAM_URL_RE,
-    TELEGRAM_USERNAME_RE,
-    TELEGRAPH_RESERVED,
+from scapper.urls import (
+    canonicalize_seed,
+    extract_base_slug,
+    extract_chat_username,
+    normalize_telegram_url,
+    normalize_telegraph_url,
 )
-from scapper.urls import extract_base_slug
 
 logger = logging.getLogger("scraper")
 
@@ -49,6 +48,8 @@ class Storage:
     def close(self) -> None:
         if self._conn is not None:
             with contextlib.suppress(Exception):
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                self._conn.execute("PRAGMA optimize;")
                 self._conn.close()
             self._conn = None
 
@@ -127,19 +128,84 @@ class Storage:
         if not seed:
             return
         clean = seed.strip().lstrip("@")
-        urls = [seed, clean]
+        urls_to_delete = {seed, clean}
+
+        norm_tg = normalize_telegram_url(seed)
+        if norm_tg:
+            urls_to_delete.add(norm_tg)
+            urls_to_delete.add(norm_tg.lower())
+
+        norm_ph = normalize_telegraph_url(seed)
+        if norm_ph:
+            urls_to_delete.add(norm_ph)
+            urls_to_delete.add(norm_ph.lower())
+
+        chat_user = extract_chat_username(seed)
+        if chat_user:
+            urls_to_delete.add(f"https://t.me/s/{chat_user}")
+            urls_to_delete.add(f"https://t.me/s/{chat_user.lower()}")
+            urls_to_delete.add(f"https://telegra.ph/{chat_user}")
+            urls_to_delete.add(f"https://telegra.ph/{chat_user.lower()}")
+
         if "://" not in seed:
-            urls.extend(
-                [
-                    f"https://t.me/s/{clean}",
-                    f"https://t.me/s/{clean.lower()}",
-                    f"https://telegra.ph/{clean}",
-                ]
-            )
+            urls_to_delete.add(f"https://t.me/s/{clean}")
+            urls_to_delete.add(f"https://t.me/s/{clean.lower()}")
+            urls_to_delete.add(f"https://telegra.ph/{clean}")
+            urls_to_delete.add(f"https://telegra.ph/{clean.lower()}")
+
+        base_slug = extract_base_slug(seed)
+
         conn = self._get_conn()
         with conn:
-            for u in urls:
+            for u in urls_to_delete:
                 conn.execute("DELETE FROM crawled_urls WHERE url = ?", (u,))
+                conn.execute("DELETE FROM crawl_queue WHERE url = ?", (u,))
+            if chat_user:
+                escaped_chat = (
+                    chat_user.lower()
+                    .replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                )
+                conn.execute(
+                    "DELETE FROM crawled_urls WHERE url LIKE ? ESCAPE '\\'",
+                    (f"https://t.me/s/{escaped_chat}%",),
+                )
+                conn.execute(
+                    "DELETE FROM crawl_queue WHERE url LIKE ? ESCAPE '\\'",
+                    (f"https://t.me/s/{escaped_chat}%",),
+                )
+                conn.execute(
+                    "DELETE FROM api_channel_progress WHERE channel_username = ?",
+                    (chat_user.lower(),),
+                )
+            if base_slug:
+                escaped_base = (
+                    base_slug.lower()
+                    .replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                )
+                conn.execute(
+                    "DELETE FROM crawled_urls WHERE url LIKE ? ESCAPE '\\'",
+                    (f"https://telegra.ph/{escaped_base}%",),
+                )
+                conn.execute(
+                    "DELETE FROM crawl_queue WHERE url LIKE ? ESCAPE '\\'",
+                    (f"https://telegra.ph/{escaped_base}%",),
+                )
+                conn.execute(
+                    "DELETE FROM probed_base_slugs WHERE base_slug = ?",
+                    (base_slug.strip().lower(),),
+                )
+
+    def clear_crawled_urls(self) -> None:
+        """Clear all crawled URL records, API channel progress, and probed base slugs from database."""
+        conn = self._get_conn()
+        with conn:
+            conn.execute("DELETE FROM crawled_urls")
+            conn.execute("DELETE FROM api_channel_progress")
+            conn.execute("DELETE FROM probed_base_slugs")
 
     # ---------- Downloaded hashes & URLs ----------
 
@@ -193,8 +259,10 @@ class Storage:
         with conn:
             cur = conn.execute(
                 """
-                INSERT OR IGNORE INTO crawl_queue (url, url_type, depth)
+                INSERT INTO crawl_queue (url, url_type, depth)
                 VALUES (?, ?, ?)
+                ON CONFLICT(url) DO UPDATE SET depth = excluded.depth
+                WHERE excluded.depth < crawl_queue.depth
                 """,
                 (url, url_type, depth),
             )
@@ -278,32 +346,8 @@ class Storage:
         if not seed:
             return
 
-        seed = seed.strip().lstrip("@")
-        if not seed or seed.startswith("#") or len(seed) < 3:
-            return
-
-        canonical: str | None = None
-
-        if any(dom in seed for dom in TELEGRAM_DOMAINS):
-            m = TELEGRAM_URL_RE.match(seed if "://" in seed else f"https://{seed}")
-            if m:
-                canonical = m.group(1).lower()
-        elif "telegra.ph" in seed:
-            canonical = extract_base_slug(seed)
-
+        canonical = canonicalize_seed(seed)
         if not canonical:
-            canonical = extract_base_slug(seed) or seed
-
-        canonical = canonical.strip().lstrip("@")
-        if TELEGRAM_USERNAME_RE.match(canonical):
-            canonical = canonical.lower()
-
-        if (
-            not canonical
-            or len(canonical) < 3
-            or canonical.lower() in TELEGRAM_RESERVED
-            or canonical.lower() in TELEGRAPH_RESERVED
-        ):
             return
 
         conn = self._get_conn()
@@ -362,33 +406,12 @@ class Storage:
         seen_lower: set[str] = set()
 
         for line in all_raw:
-            s = line.strip().lstrip("@")
-            if not s or s.startswith("#") or len(s) < 3:
+            c = canonicalize_seed(line)
+            if not c:
                 continue
 
-            c: str | None = None
-            if any(dom in s for dom in TELEGRAM_DOMAINS):
-                m = TELEGRAM_URL_RE.match(s if "://" in s else f"https://{s}")
-                if m:
-                    c = m.group(1).lower()
-            elif "telegra.ph" in s:
-                c = extract_base_slug(s)
-
-            if not c:
-                c = extract_base_slug(s) or s
-
-            c = c.strip().lstrip("@")
-            if TELEGRAM_USERNAME_RE.match(c):
-                c = c.lower()
-
             c_lower = c.lower()
-            if (
-                c
-                and len(c) >= 3
-                and c_lower not in TELEGRAM_RESERVED
-                and c_lower not in TELEGRAPH_RESERVED
-                and c_lower not in seen_lower
-            ):
+            if c_lower not in seen_lower:
                 seen_lower.add(c_lower)
                 canonical_seeds.append(c)
 

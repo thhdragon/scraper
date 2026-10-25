@@ -15,11 +15,16 @@ from scapper.constants import (
     TELEGRAM_MENTION_RE,
     TELEGRAM_RESERVED,
     TELEGRAM_URL_RE,
+    TELEGRAPH_RESERVED,
     TELEGRAPH_URL_RE,
     TELEGRAPH_URL_SUFFIX_RE,
 )
 from scapper.downloader import extension_from_url, fetch_url, probe_url_exists
-from scapper.urls import normalize_telegram_url, normalize_telegraph_url
+from scapper.urls import (
+    is_telegraph_media_url,
+    normalize_telegram_url,
+    normalize_telegraph_url,
+)
 
 if TYPE_CHECKING:
     from scapper.config import ScraperConfig
@@ -45,8 +50,14 @@ async def scrape_telegraph_page(
     try:
         resp = await do_fetch(client, url)
 
-        if resp is None or resp.status_code != 200:
-            logger.warning(f"Failed to fetch Telegraph page: {url}")
+        if resp is None:
+            raise httpx.TransportError(f"Failed to fetch Telegraph page: {url}")
+
+        if resp.status_code in {429, 500, 502, 503, 504}:
+            resp.raise_for_status()
+
+        if resp.status_code != 200:
+            logger.warning(f"Telegraph page returned HTTP {resp.status_code}: {url}")
             return media_urls, telegram_urls, telegraph_urls
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -71,7 +82,7 @@ async def scrape_telegraph_page(
                 continue
             href = urllib.parse.urljoin(url, href_val)
             ext = extension_from_url(href)
-            if ext in MEDIA_EXTENSIONS or "/file/" in href:
+            if ext in MEDIA_EXTENSIONS or is_telegraph_media_url(href):
                 media_urls.append(href)
                 continue
 
@@ -118,10 +129,19 @@ async def scrape_telegraph_page(
                     if tel:
                         telegram_urls.add(tel)
 
+    except (httpx.HTTPStatusError, httpx.TransportError):
+        raise
     except Exception as exc:
         logger.error(f"Error scraping Telegraph page {url}: {exc}")
 
-    return media_urls, telegram_urls, telegraph_urls
+    unique_media: list[str] = []
+    seen_media: set[str] = set()
+    for m in media_urls:
+        if m and m not in seen_media:
+            seen_media.add(m)
+            unique_media.append(m)
+
+    return unique_media, telegram_urls, telegraph_urls
 
 
 async def probe_telegraph_suffixes(
@@ -147,9 +167,10 @@ async def probe_telegraph_suffixes(
     found: list[str] = []
     attempts = 0
     do_probe = probe_fn or probe_url_exists
+    limit = max_suffix_probes if max_suffix_probes > 0 else 200
 
     while True:
-        if max_suffix_probes > 0 and attempts >= max_suffix_probes:
+        if attempts >= limit:
             break
 
         probe_url = f"{base}-{2 + attempts}"
@@ -175,10 +196,17 @@ async def probe_slug_all_dates(
     if not config.probe_telegraph_dates:
         return []
 
-    if storage.has_base_slug_probed(base_slug):
+    base_slug = (base_slug or "").strip()
+    if (
+        not base_slug
+        or len(base_slug) < 3
+        or base_slug.lower() in TELEGRAPH_RESERVED
+        or base_slug.lower() in TELEGRAM_RESERVED
+    ):
         return []
 
-    storage.mark_base_slug_probed(base_slug)
+    if storage.has_base_slug_probed(base_slug):
+        return []
 
     logger.info(f"Probing all 366 date suffixes for base slug: {base_slug}")
 
@@ -202,6 +230,7 @@ async def probe_slug_all_dates(
                 found.append(probe_url)
 
     await asyncio.gather(*(probe_one(u) for u in probe_urls))
+    storage.mark_base_slug_probed(base_slug)
     found.sort()
 
     return found

@@ -7,7 +7,11 @@ import typing
 import httpx
 
 from scapper.config import ScraperConfig
-from scapper.constants import TELEGRAM_DOMAINS, TELEGRAM_URL_RE
+from scapper.constants import (
+    TELEGRAM_DOMAINS,
+    TELEGRAM_URL_RE,
+    TELEGRAPH_DOMAINS,
+)
 from scapper.discovery import run_discovery
 from scapper.downloader import download_many, make_client
 from scapper.storage import Storage
@@ -71,7 +75,7 @@ class MediaScraper:
             return
 
         # Direct Telegraph URL
-        if "telegra.ph" in seed:
+        if any(dom in seed.lower() for dom in TELEGRAPH_DOMAINS):
             url = normalize_telegraph_url(seed)
             if url:
                 self.enqueue_url(url, "telegraph", depth)
@@ -82,7 +86,7 @@ class MediaScraper:
             return
 
         # Direct Telegram URL
-        if any(dom in seed for dom in TELEGRAM_DOMAINS):
+        if any(dom in seed.lower() for dom in TELEGRAM_DOMAINS):
             url = normalize_telegram_url(seed)
             if url:
                 self.enqueue_url(url, "telegram", depth)
@@ -147,7 +151,6 @@ class MediaScraper:
         if base:
             for tg_cand in slugify_telegram_candidates(base):
                 self.enqueue_url(f"https://t.me/s/{tg_cand}", "telegram", depth + 1)
-                self.storage.add_discovered_seed(tg_cand)
 
             if self.cfg.probe_telegraph_dates:
                 date_urls = await probe_slug_all_dates(
@@ -209,16 +212,20 @@ class MediaScraper:
             for seed in seeds:
                 self.add_seed(seed, depth=0)
 
-            while True:
-                depth = self.storage.get_min_pending_depth()
-                if depth is None:
-                    break
+            transient_failures: dict[str, int] = {}
 
-                if depth > self.cfg.max_depth:
-                    logger.info(
-                        f"Reached max crawl depth ({self.cfg.max_web_depth}). "
-                        "Remaining queue is preserved."
-                    )
+            while True:
+                depth = self.storage.get_min_pending_depth(self.cfg.max_depth)
+                if depth is None:
+                    unbounded_depth = self.storage.get_min_pending_depth()
+                    if (
+                        unbounded_depth is not None
+                        and unbounded_depth > self.cfg.max_depth
+                    ):
+                        logger.info(
+                            f"Reached max crawl depth ({self.cfg.max_web_depth}). "
+                            "Remaining queue is preserved."
+                        )
                     break
 
                 batch = self.storage.get_pending_batch(depth, limit=200)
@@ -248,13 +255,28 @@ class MediaScraper:
                         )
                         raise
 
+                    except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                        attempts = transient_failures.get(url, 0) + 1
+                        transient_failures[url] = attempts
+                        if attempts < 3:
+                            logger.warning(
+                                f"Transient failure processing {url_type} URL {url} "
+                                f"(attempt {attempts}/3): {exc}. Will retry."
+                            )
+                        else:
+                            logger.error(
+                                f"Max retries exceeded for {url_type} URL {url}. Dropping from queue."
+                            )
+                            self.storage.remove_from_queue(url)
+                        await asyncio.sleep(self.cfg.delay())
+
                     except Exception:
                         logger.exception(f"Failed processing {url_type} URL {url}")
-                        self.storage.mark_url_crawled(url)
                         self.storage.remove_from_queue(url)
                         await asyncio.sleep(self.cfg.delay())
 
                     else:
+                        transient_failures.pop(url, None)
                         self.storage.mark_url_crawled(url)
                         self.storage.remove_from_queue(url)
                         await asyncio.sleep(self.cfg.delay())
@@ -270,7 +292,11 @@ class MediaScraper:
         )
 
         if use_api and api_configured:
-            api_targets = [s for s in seeds if "telegra.ph" not in s.lower()]
+            api_targets = [
+                s
+                for s in seeds
+                if not any(dom in s.lower() for dom in TELEGRAPH_DOMAINS)
+            ]
             if api_targets:
                 logger.info(
                     "Telegram API credentials detected. Attempting API scraper..."

@@ -73,6 +73,7 @@ async def download_telethon_media(
     if doc and getattr(doc, "size", 0) and int(doc.size) < config.min_size_bytes:
         return None
 
+    config.download_dir.mkdir(parents=True, exist_ok=True)
     temp_path = config.download_dir / f"temp_api_{uuid.uuid4().hex}"
     downloaded: str | None = None
 
@@ -119,7 +120,7 @@ async def download_telethon_media(
             with p.open("rb") as fh:
                 while chunk := fh.read(65536):
                     if not header:
-                        header = chunk[:64]
+                        header = chunk[:4096]
                     s.update(chunk)
             return s.hexdigest(), header
 

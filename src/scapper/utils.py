@@ -30,28 +30,34 @@ def detect_media_type_from_bytes(data: bytes) -> tuple[str, str] | None:
             return "audio/wav", ".wav"
         if data[8:12] == b"AVI ":
             return "video/x-msvideo", ".avi"
-    if len(data) >= 12 and data[4:8] == b"ftyp":
-        major_brand = data[8:12]
+    if len(data) >= 12 and data[4:8].lower() == b"ftyp":
+        major_brand = data[8:12].lower()
         if major_brand in {b"avif", b"avis"}:
             return "image/avif", ".avif"
-        if major_brand in {b"heic", b"heix", b"hevc", b"mif1"}:
+        if major_brand in {b"heic", b"heix", b"hevc", b"mif1", b"msf1"}:
             return "image/heic", ".heic"
-        if major_brand in {b"M4A ", b"M4B "}:
+        if major_brand in {b"m4a ", b"m4b "}:
             return "audio/mp4", ".m4a"
+        if major_brand == b"m4v ":
+            return "video/x-m4v", ".m4v"
         if major_brand in {b"qt  ", b"moov"}:
             return "video/quicktime", ".mov"
         return "video/mp4", ".mp4"
     if data.startswith(b"\x1a\x45\xdf\xa3"):
-        if b"matroska" in data[:64]:
+        if b"matroska" in data[:1024]:
             return "video/x-matroska", ".mkv"
         return "video/webm", ".webm"
     if data.startswith(b"OggS"):
+        if b"OpusHead" in data[:64]:
+            return "audio/opus", ".opus"
         return "audio/ogg", ".ogg"
     if data.startswith(b"fLaC"):
         return "audio/flac", ".flac"
-    if data.startswith(b"ID3") or (
-        len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0
-    ):
+    if data.startswith(b"ID3"):
+        return "audio/mpeg", ".mp3"
+    if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        if (data[1] & 0x06) == 0:
+            return "audio/aac", ".aac"
         return "audio/mpeg", ".mp3"
     if data.startswith(b"BM"):
         return "image/bmp", ".bmp"

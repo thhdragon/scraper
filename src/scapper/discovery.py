@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("scraper")
 
 
-def unwrap_ddg(href: str) -> str:
-    """Unwrap redirect URL from DuckDuckGo search result link."""
+def unwrap_search_url(href: str) -> str:
+    """Unwrap redirect URL from search result links (DuckDuckGo, Yandex, etc.)."""
     if href.startswith("//"):
         href = "https:" + href
     elif href.startswith("/"):
@@ -33,11 +33,21 @@ def unwrap_ddg(href: str) -> str:
 
     parsed = urllib.parse.urlparse(href)
 
-    if parsed.netloc.endswith("duckduckgo.com") and "uddg=" in parsed.query:
+    if parsed.query:
         qs = urllib.parse.parse_qs(parsed.query)
-        return qs.get("uddg", [href])[0]
+        # DuckDuckGo
+        if "uddg" in qs:
+            return qs["uddg"][0]
+        # Yandex, Google, and standard redirect wrappers
+        for key in ("url", "rurl", "target", "q"):
+            val = qs.get(key, [None])[0]
+            if val and val.startswith(("http://", "https://")):
+                return val
 
     return href
+
+
+unwrap_ddg = unwrap_search_url
 
 
 async def discover_urls_duckduckgo(
@@ -53,7 +63,8 @@ async def discover_urls_duckduckgo(
 
     queries = [
         f"site:telegra.ph {keyword}",
-        f"site:t.me/s/ {keyword}",
+        f"site:graph.org {keyword}",
+        f"site:t.me {keyword}",
     ]
 
     for query in queries:
@@ -122,7 +133,8 @@ async def discover_urls_yandex(
 
     queries = [
         f"site:telegra.ph {keyword}",
-        f"site:t.me/s/ {keyword}",
+        f"site:graph.org {keyword}",
+        f"site:t.me {keyword}",
     ]
 
     for query in queries:
@@ -148,7 +160,7 @@ async def discover_urls_yandex(
                 href_val = a.get("href")
                 if not isinstance(href_val, str) or not href_val:
                     continue
-                target = href_val
+                target = unwrap_search_url(href_val)
 
                 tg = normalize_telegraph_url(target)
 

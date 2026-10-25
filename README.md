@@ -111,7 +111,11 @@ usage: scapper [-h] [--seeds SEEDS] [--config CONFIG] [--db DB]
 | `--probe-dates` | Enable calendar date probing for Telegra.ph articles. |
 | `--discover` | Run search engine discovery before crawling. |
 | `--keywords WORDS` | Comma-separated discovery keywords (e.g. `wallpaper,nature`). |
+| `--force-crawl` | Re-crawl provided seed URLs even if already marked crawled in database. |
+| `--reset-crawled` | Clear crawled URLs history in database without clearing downloaded hashes. |
 | `--reset-queue` | Clear the pending URL queue in the database before starting. |
+| `--timeout SECONDS` | Override HTTP request timeout in seconds. |
+| `--max-connections NUM` | Override maximum concurrent HTTP connections. |
 | `--verbose` | Enable debug logging. |
 
 ---

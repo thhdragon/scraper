@@ -11,6 +11,7 @@ from scapper.constants import (
     TELEGRAM_RESERVED,
     TELEGRAM_URL_RE,
     TELEGRAM_USERNAME_RE,
+    TELEGRAPH_DOMAINS,
     TELEGRAPH_RESERVED,
     TELEGRAPH_SLUG_DATE_RE,
 )
@@ -32,7 +33,7 @@ def ensure_scheme(url: str) -> str:
 
 
 def normalize_telegraph_url(url: str) -> str | None:
-    """Validate and normalize a Telegra.ph article URL."""
+    """Validate and normalize a Telegra.ph / Graph.org article URL."""
     url = ensure_scheme(url)
 
     if not url:
@@ -41,7 +42,9 @@ def normalize_telegraph_url(url: str) -> str | None:
     parsed = urllib.parse.urlparse(url)
     netloc = parsed.netloc.lower().split(":")[0].removeprefix("www.")
 
-    if netloc != "telegra.ph" and not netloc.endswith(".telegra.ph"):
+    if netloc not in TELEGRAPH_DOMAINS and not any(
+        netloc.endswith(f".{d}") for d in TELEGRAPH_DOMAINS
+    ):
         return None
 
     path = parsed.path.rstrip("/")
@@ -56,10 +59,28 @@ def normalize_telegraph_url(url: str) -> str | None:
     if Path(path).suffix.lower() in MEDIA_EXTENSIONS:
         return None
 
-    if not re.fullmatch(r"/[A-Za-z0-9_\-]+", path):
+    # Percent-encode unencoded unicode characters
+    quoted_path = urllib.parse.quote(urllib.parse.unquote(path), safe="/%-_")
+
+    if not re.fullmatch(r"/(?:%[0-9A-Fa-f]{2}|[A-Za-z0-9_\-])+", quoted_path):
         return None
 
-    return f"https://telegra.ph{path}"
+    return f"https://telegra.ph{quoted_path}"
+
+
+def is_telegraph_media_url(url: str) -> bool:
+    """Check if a URL points to a media asset on a Telegra.ph / Graph.org domain (/file/...)."""
+    if not url:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(url)
+        netloc = parsed.netloc.lower().split(":")[0].removeprefix("www.")
+        is_telegraph = netloc in TELEGRAPH_DOMAINS or any(
+            netloc.endswith(f".{d}") for d in TELEGRAPH_DOMAINS
+        )
+        return is_telegraph and parsed.path.startswith("/file/")
+    except Exception:
+        return False
 
 
 def normalize_telegram_url(url: str) -> str | None:
@@ -72,43 +93,55 @@ def normalize_telegram_url(url: str) -> str | None:
     parsed = urllib.parse.urlparse(url)
     netloc = parsed.netloc.lower().split(":")[0].removeprefix("www.")
 
+    subdomain_channel: str | None = None
     if netloc not in TELEGRAM_DOMAINS:
-        return None
+        for d in TELEGRAM_DOMAINS:
+            if netloc.endswith(f".{d}"):
+                cand_sub = netloc[: -len(d) - 1].strip(".")
+                if cand_sub and cand_sub != "www" and cand_sub not in TELEGRAM_RESERVED:
+                    subdomain_channel = cand_sub
+                break
+        if not subdomain_channel and netloc not in TELEGRAM_DOMAINS:
+            return None
 
     path_clean = parsed.path.strip("/")
-    if not path_clean:
-        return None
+    parts = [p for p in path_clean.split("/") if p] if path_clean else []
 
-    # Check for private channel/group invite patterns
-    if path_clean.startswith(("+", "joinchat/", "c/")):
-        logger.warning(
-            f"Skipping private Telegram URL '{url}'. "
-            "Private channels/groups cannot be viewed publicly and require an authorized Telegram account."
-        )
-        return None
-
-    parts = [p for p in path_clean.split("/") if p]
-
-    if not parts:
-        return None
-
-    if parts[0].lower() == "s":
+    if parts and parts[0].lower() == "s":
         parts = parts[1:]
 
-    if not parts:
-        return None
+    msg_id: str | None = None
+    if subdomain_channel:
+        username = subdomain_channel.lower()
+        if parts and parts[0].isdigit():
+            msg_id = parts[0]
+    else:
+        if not parts:
+            return None
 
-    username = parts[0].split("?")[0].strip().lstrip("@").lower()
+        first_part = parts[0].lower()
+        # Check for private channel/group invite patterns (both raw and after /s/)
+        if (
+            first_part.startswith("+")
+            or first_part in {"joinchat", "c"}
+            or path_clean.startswith(("+", "joinchat/", "c/"))
+        ):
+            logger.warning(
+                f"Skipping private Telegram URL '{url}'. "
+                "Private channels/groups cannot be viewed publicly and require an authorized Telegram account."
+            )
+            return None
 
-    if username.lower() in TELEGRAM_RESERVED:
+        username = parts[0].split("?")[0].split("#")[0].strip().lstrip("@").lower()
+
+        if len(parts) > 1 and parts[1].isdigit():
+            msg_id = parts[1]
+
+    if username in TELEGRAM_RESERVED:
         return None
 
     if not TELEGRAM_USERNAME_RE.match(username):
         return None
-
-    msg_id: str | None = None
-    if len(parts) > 1 and parts[1].isdigit():
-        msg_id = parts[1]
 
     if msg_id:
         base = f"https://t.me/s/{username}/{msg_id}"
@@ -129,29 +162,29 @@ def normalize_telegram_url(url: str) -> str | None:
 
 
 def extract_base_slug(url: str) -> str | None:
-    """Extract the base slug from a Telegra.ph URL, stripping date suffixes."""
+    """Extract the base slug from a Telegra.ph URL or slug string, stripping date suffixes."""
     if not url:
         return None
 
     url = url.strip()
+    url_lower = url.lower()
 
-    if "telegra.ph" in url:
+    if any(dom in url_lower for dom in TELEGRAPH_DOMAINS):
         normalized = normalize_telegraph_url(url)
         if not normalized:
             return None
         path = urllib.parse.urlparse(normalized).path.strip("/")
-    elif "://" in url or "/" in url:
-        try:
-            parsed = urllib.parse.urlparse(url)
-            path = parsed.path.strip("/")
-            if not path:
-                return None
-        except Exception:
-            path = url.strip("/")
+    elif "://" in url:
+        return None
+    elif "/" in url:
+        parts = [p for p in url.strip("/").split("/") if p]
+        if len(parts) > 1:
+            return None
+        path = parts[0] if parts else ""
     else:
         path = url.strip("/")
 
-    if not path:
+    if not path or path.startswith("+"):
         return None
 
     m = TELEGRAPH_SLUG_DATE_RE.match(path)
@@ -165,13 +198,30 @@ def slugify_telegraph_candidates(text: str) -> list[str]:
     """Generate candidate slug variants for Telegra.ph."""
     if not text:
         return []
+
+    # Skip private Telegram links or media files
+    if text.startswith("+") or text.lower().startswith(("joinchat/", "c/")):
+        return []
+    if "/file/" in text or any(text.lower().endswith(ext) for ext in MEDIA_EXTENSIONS):
+        return []
+
+    text_lower = text.lower()
+    if any(dom in text_lower for dom in TELEGRAM_DOMAINS):
+        norm = normalize_telegram_url(text)
+        if norm:
+            m = TELEGRAM_URL_RE.match(norm)
+            if m:
+                text = m.group(1)
+        else:
+            return []
+
     if "://" in text or "/" in text:
         try:
             parsed = urllib.parse.urlparse(text)
             text = parsed.path.rstrip("/").split("/")[-1]
         except Exception:
             pass
-    text = text.split("?")[0].strip().lstrip("@")
+    text = text.split("?")[0].split("#")[0].strip().lstrip("@")
     candidates: list[str] = []
 
     # 1. Hyphenated slug (converting underscores and spaces to hyphens)
@@ -217,13 +267,21 @@ def slugify_telegram_candidates(text: str) -> list[str]:
     """Generate candidate Telegram usernames from raw text or URLs."""
     if not text:
         return []
-    if any(dom in text for dom in TELEGRAM_DOMAINS) or "://" in text:
+
+    # Skip private Telegram links
+    if text.startswith("+") or text.lower().startswith(("joinchat/", "c/")):
+        return []
+
+    text_lower = text.lower()
+    if any(dom in text_lower for dom in TELEGRAM_DOMAINS) or "://" in text:
         norm = normalize_telegram_url(text)
         if norm:
             m = TELEGRAM_URL_RE.match(norm)
             if m:
                 text = m.group(1)
         else:
+            if any(dom in text_lower for dom in TELEGRAM_DOMAINS):
+                return []
             try:
                 parsed = urllib.parse.urlparse(text)
                 parts = [
@@ -238,7 +296,7 @@ def slugify_telegram_candidates(text: str) -> list[str]:
         if parts:
             text = parts[0]
 
-    text = text.split("?")[0].strip().lstrip("@")
+    text = text.split("?")[0].split("#")[0].strip().lstrip("@")
     candidates: list[str] = []
 
     # 1. Exact match if valid
@@ -285,7 +343,12 @@ def extract_chat_username(target: str) -> str | None:
     if not target:
         return None
 
-    if any(dom in target for dom in TELEGRAM_DOMAINS) or "://" in target:
+    # Reject private Telegram invite links
+    if target.startswith("+") or target.lower().startswith(("joinchat/", "c/")):
+        return None
+
+    target_lower = target.lower()
+    if any(dom in target_lower for dom in TELEGRAM_DOMAINS) or "://" in target:
         normalized = normalize_telegram_url(target)
 
         if normalized:
@@ -296,7 +359,11 @@ def extract_chat_username(target: str) -> str | None:
                 if cand.lower() not in TELEGRAM_RESERVED:
                     return cand
 
-    raw = target.lstrip("@").split("?")[0].strip()
+        # If it was a Telegram domain or URL and could not be normalized to a public channel,
+        # it is either private, invalid, or an external URL. Do not fall back!
+        return None
+
+    raw = target.lstrip("@").split("?")[0].split("#")[0].strip()
     if "/" in raw:
         parts = [p for p in raw.split("/") if p and p != "s"]
         if parts:
@@ -310,3 +377,72 @@ def extract_chat_username(target: str) -> str | None:
         return raw
 
     return slugify_telegram(target)
+
+
+def canonicalize_seed(seed: str) -> str | None:
+    """
+    Validate and return canonical representation of a seed.
+    Returns:
+      - Lowercase Telegram username for public channels (e.g. 'durov')
+      - Clean Telegra.ph base slug for articles (e.g. 'my-article-title')
+      - None if invalid, private, reserved, or not a supported channel/article.
+    """
+    if not seed:
+        return None
+    s = seed.strip()
+    if not s or s.startswith("#") or len(s) < 3:
+        return None
+
+    # Reject private Telegram invite codes
+    if s.startswith("+") or s.lower().startswith(("joinchat/", "c/")):
+        return None
+
+    s_lower = s.lower()
+
+    # 1. Telegram domain or full URL
+    if any(dom in s_lower for dom in TELEGRAM_DOMAINS):
+        norm = normalize_telegram_url(s)
+        if not norm:
+            return None
+        m = TELEGRAM_URL_RE.match(norm)
+        if m:
+            username = m.group(1).lower()
+            if username not in TELEGRAM_RESERVED and username not in TELEGRAPH_RESERVED:
+                return username
+        return None
+
+    # 2. Telegra.ph / Graph.org domain or full URL
+    if any(dom in s_lower for dom in TELEGRAPH_DOMAINS):
+        norm_ph = normalize_telegraph_url(s)
+        if not norm_ph:
+            return None
+        base = extract_base_slug(norm_ph)
+        if base and base.lower() not in TELEGRAPH_RESERVED and base.lower() not in TELEGRAM_RESERVED:
+            return base
+        return None
+
+    # 3. If there is a scheme '://' but neither Telegram nor Telegraph, reject
+    if "://" in s:
+        return None
+
+    # 4. Raw identifier / slug without domain
+    raw = s.lstrip("@").split("?")[0].split("#")[0].strip()
+    if not raw or "/" in raw:
+        return None
+
+    # Check if valid Telegram username
+    if TELEGRAM_USERNAME_RE.match(raw):
+        cand = raw.lower()
+        if cand not in TELEGRAM_RESERVED and cand not in TELEGRAPH_RESERVED:
+            return cand
+
+    # Check if valid Telegraph slug
+    base = extract_base_slug(raw)
+    if base:
+        quoted_base = urllib.parse.quote(urllib.parse.unquote(base), safe="%-_")
+        if re.fullmatch(r"(?:%[0-9A-Fa-f]{2}|[A-Za-z0-9_\-])+", quoted_base):
+            cand = quoted_base.lower()
+            if cand not in TELEGRAPH_RESERVED and cand not in TELEGRAM_RESERVED:
+                return quoted_base
+
+    return None

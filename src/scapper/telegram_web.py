@@ -18,6 +18,7 @@ from scapper.constants import (
 )
 from scapper.downloader import extension_from_url, fetch_url
 from scapper.urls import (
+    is_telegraph_media_url,
     normalize_telegram_url,
     normalize_telegraph_url,
     slugify_telegraph_candidates,
@@ -48,8 +49,14 @@ async def scrape_telegram_web_preview(
     try:
         resp = await do_fetch(client, url)
 
-        if resp is None or resp.status_code != 200:
-            logger.warning(f"Failed to fetch Telegram preview: {url}")
+        if resp is None:
+            raise httpx.TransportError(f"Failed to fetch Telegram preview: {url}")
+
+        if resp.status_code in {429, 500, 502, 503, 504}:
+            resp.raise_for_status()
+
+        if resp.status_code != 200:
+            logger.warning(f"Telegram preview returned HTTP {resp.status_code}: {url}")
             return media_urls, telegraph_urls, discovered_telegram, before_url
 
         resp_url_str = str(getattr(resp, "url", url))
@@ -78,9 +85,10 @@ async def scrape_telegram_web_preview(
         ):
             style = wrap.get("style", "")
             if isinstance(style, str) and style:
-                m = re.search(r"url\((['\"]?)(?P<url>[^'\")]+)\1\)", style)
-                if m:
-                    media_urls.append(urllib.parse.urljoin(url, m.group("url")))
+                for m in re.finditer(r"url\((['\"]?)(?P<url>[^'\")]+)\1\)", style):
+                    clean_u = m.group("url").strip("'\" ")
+                    if clean_u:
+                        media_urls.append(urllib.parse.urljoin(url, clean_u))
 
         # 2. Photos in link previews
         for preview in soup.select(
@@ -88,9 +96,10 @@ async def scrape_telegram_web_preview(
         ):
             style = preview.get("style", "")
             if isinstance(style, str) and style:
-                m = re.search(r"url\((['\"]?)(?P<url>[^'\")]+)\1\)", style)
-                if m:
-                    media_urls.append(urllib.parse.urljoin(url, m.group("url")))
+                for m in re.finditer(r"url\((['\"]?)(?P<url>[^'\")]+)\1\)", style):
+                    clean_u = m.group("url").strip("'\" ")
+                    if clean_u:
+                        media_urls.append(urllib.parse.urljoin(url, clean_u))
 
         # 3. Videos, round videos, and video sources
         for tag in soup.find_all(["video", "source"]):
@@ -156,7 +165,7 @@ async def scrape_telegram_web_preview(
 
             href = urllib.parse.urljoin(url, href_val)
             ext = extension_from_url(href)
-            if ext in MEDIA_EXTENSIONS or "/file/" in href:
+            if ext in MEDIA_EXTENSIONS or is_telegraph_media_url(href):
                 media_urls.append(href)
                 continue
 
@@ -176,7 +185,7 @@ async def scrape_telegram_web_preview(
                 ):
                     discovered_telegram.add(f"https://t.me/s/{cand_channel}")
 
-        # 8. Text mentions (@username) and Telegraph links in message bodies
+        # 8. Text mentions (@username), Telegram links, and Telegraph links in message bodies
         for msg_text_elem in soup.select(".tgme_widget_message_text"):
             msg_text = msg_text_elem.get_text()
             for mention in TELEGRAM_MENTION_RE.findall(msg_text):
@@ -185,6 +194,18 @@ async def scrape_telegram_web_preview(
                     m_norm = normalize_telegram_url(f"https://t.me/{mention}")
                     if m_norm:
                         discovered_telegram.add(m_norm)
+
+            for tg_match in TELEGRAM_URL_RE.finditer(msg_text):
+                tel = normalize_telegram_url(tg_match.group(0))
+                if tel:
+                    m_tel = TELEGRAM_URL_RE.match(tel)
+                    cand_channel = m_tel.group(1).lower() if m_tel else None
+                    if (
+                        cand_channel
+                        and cand_channel != current_channel
+                        and cand_channel not in TELEGRAM_RESERVED
+                    ):
+                        discovered_telegram.add(f"https://t.me/s/{cand_channel}")
 
             for ph_match in TELEGRAPH_URL_RE.finditer(msg_text):
                 ph_norm = normalize_telegraph_url(ph_match.group(0))
@@ -202,15 +223,45 @@ async def scrape_telegram_web_preview(
                     telegraph_urls.add(ph_norm)
 
         # 10. Pagination for older messages
-        next_link = soup.find("a", class_=re.compile(r"(?:tgme|tme)_messages_more"))
-        if next_link is None:
-            next_link = soup.find("a", href=re.compile(r"[?&]before="))
+        curr_before: int | None = None
+        if "?before=" in url or "&before=" in url:
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                b_val = qs.get("before", [None])[0]
+                if b_val and b_val.isdigit():
+                    curr_before = int(b_val)
+            except Exception:
+                pass
 
-        if isinstance(next_link, Tag):
-            href = next_link.get("href")
+        # Look specifically for links pointing to older messages (?before=...)
+        # Telegram renders both ?before= (older) and ?after= (newer) with .tme_messages_more.
+        # Restrict to pagination elements and verify that the target belongs to the current channel.
+        cand_before_tag: Tag | None = None
+        for a_more in soup.select("a.tme_messages_more, a.js-messages_more"):
+            raw_href = a_more.get("href")
+            if isinstance(raw_href, str) and "before=" in raw_href:
+                cand_before_full = urllib.parse.urljoin(url, raw_href)
+                m_btn = TELEGRAM_URL_RE.match(cand_before_full)
+                if (
+                    m_btn
+                    and current_channel
+                    and m_btn.group(1).lower() == current_channel
+                ):
+                    cand_before_tag = a_more
+                    break
+
+        if isinstance(cand_before_tag, Tag):
+            href = cand_before_tag.get("href")
             if isinstance(href, str) and href:
-                before_url = urllib.parse.urljoin(url, href)
-        elif messages and current_channel:
+                cand_before = urllib.parse.urljoin(url, href)
+                qs_cand = urllib.parse.parse_qs(urllib.parse.urlparse(cand_before).query)
+                cand_b_val = qs_cand.get("before", [None])[0]
+                if cand_b_val and cand_b_val.isdigit():
+                    b_int = int(cand_b_val)
+                    if b_int > 1 and (curr_before is None or b_int < curr_before):
+                        before_url = cand_before
+
+        if before_url is None and messages and current_channel:
             msg_ids = []
             for msg in messages:
                 post_attr = msg.get("data-post", "")
@@ -218,10 +269,12 @@ async def scrape_telegram_web_preview(
                     ch, mid = post_attr.split("/", 1)
                     if ch.lower() == current_channel and mid.isdigit():
                         msg_ids.append(int(mid))
-            if msg_ids and min(msg_ids) > 1:
-                before_url = (
-                    f"https://t.me/s/{current_channel}?before={min(msg_ids)}"
-                )
+            if msg_ids:
+                min_id = min(msg_ids)
+                if min_id > 1 and (curr_before is None or min_id < curr_before):
+                    before_url = (
+                        f"https://t.me/s/{current_channel}?before={min_id}"
+                    )
 
         # Ensure pagination URL is never treated as a newly discovered external channel
         if before_url:
@@ -234,7 +287,16 @@ async def scrape_telegram_web_preview(
                         f"https://t.me/s/{m_b.group(1).lower()}"
                     )
 
+    except (httpx.HTTPStatusError, httpx.TransportError):
+        raise
     except Exception as exc:
         logger.error(f"Error scraping Telegram preview {url}: {exc}")
 
-    return media_urls, telegraph_urls, discovered_telegram, before_url
+    unique_media: list[str] = []
+    seen_media: set[str] = set()
+    for m in media_urls:
+        if m and m not in seen_media:
+            seen_media.add(m)
+            unique_media.append(m)
+
+    return unique_media, telegraph_urls, discovered_telegram, before_url

@@ -72,19 +72,36 @@ class ScraperConfig:
         else:
             delay_min, delay_max = 1.0, 3.0
 
-        discovery = data.get("discovery", {})
+        discovery = data.get("discovery")
         if not isinstance(discovery, dict):
             discovery = {}
 
         max_web_depth = _safe_int(data.get("max_web_depth", -1), -1)
 
-        raw_api = data.get("telegram_api", {})
+        raw_api = data.get("telegram_api")
         telegram_api = raw_api if isinstance(raw_api, dict) else {}
+
+        db_path_raw = data.get("db_path")
+        db_path = Path(db_path_raw) if db_path_raw else Path("scraper_cache.db")
+
+        download_dir_raw = data.get("download_dir")
+        download_dir = Path(download_dir_raw) if download_dir_raw else Path("./downloads")
+
+        discovered_file_raw = data.get("discovered_seeds_file")
+        discovered_seeds_file = Path(discovered_file_raw) if discovered_file_raw else Path("discovered_seeds.txt")
+
+        keywords_raw = discovery.get("keywords")
+        if not isinstance(keywords_raw, (list, tuple)):
+            keywords_raw = ["wallpaper"]
+
+        search_engines_raw = discovery.get("search_engines")
+        if not isinstance(search_engines_raw, (list, tuple)):
+            search_engines_raw = ["duckduckgo"]
 
         return cls(
             config_path=path,
-            db_path=Path(data.get("db_path", "scraper_cache.db")),
-            download_dir=Path(data.get("download_dir", "./downloads")),
+            db_path=db_path,
+            download_dir=download_dir,
             min_size_kb=_safe_int(data.get("min_size_kb", 20), 20, min_val=0),
             max_web_depth=max_web_depth,
             web_delay_min=delay_min,
@@ -102,14 +119,10 @@ class ScraperConfig:
             ),
             max_suffix_probes=_safe_int(data.get("max_suffix_probes", 0), 0, min_val=0),
             discovery_enabled=bool(discovery.get("enabled", False)),
-            keywords=tuple(str(k) for k in discovery.get("keywords", ["wallpaper"])),
-            search_engines=tuple(
-                str(e).lower() for e in discovery.get("search_engines", ["duckduckgo"])
-            ),
+            keywords=tuple(str(k) for k in keywords_raw),
+            search_engines=tuple(str(e).lower() for e in search_engines_raw),
             include_discovered=bool(data.get("include_discovered", True)),
-            discovered_seeds_file=Path(
-                data.get("discovered_seeds_file", "discovered_seeds.txt")
-            ),
+            discovered_seeds_file=discovered_seeds_file,
             telegram_api=telegram_api,
             raw=data,
         )
