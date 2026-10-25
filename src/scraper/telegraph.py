@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import httpx
 from bs4 import BeautifulSoup
 
-from scapper.constants import (
+from scraper.constants import (
     MEDIA_EXTENSIONS,
     TELEGRAM_MENTION_RE,
     TELEGRAM_RESERVED,
@@ -19,16 +19,16 @@ from scapper.constants import (
     TELEGRAPH_URL_RE,
     TELEGRAPH_URL_SUFFIX_RE,
 )
-from scapper.downloader import extension_from_url, fetch_url, probe_url_exists
-from scapper.urls import (
+from scraper.downloader import extension_from_url, fetch_url, probe_url_exists
+from scraper.urls import (
     is_telegraph_media_url,
     normalize_telegram_url,
     normalize_telegraph_url,
 )
 
 if TYPE_CHECKING:
-    from scapper.config import ScraperConfig
-    from scapper.storage import Storage
+    from scraper.config import ScraperConfig
+    from scraper.storage import Storage
 
 logger = logging.getLogger("scraper")
 

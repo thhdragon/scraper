@@ -6,7 +6,7 @@ import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scapper.utils import _safe_float, _safe_int
+from scraper.utils import _safe_float, _safe_int
 
 logger = logging.getLogger("scraper")
 

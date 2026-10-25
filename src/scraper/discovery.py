@@ -9,17 +9,17 @@ from typing import TYPE_CHECKING
 import httpx
 from bs4 import BeautifulSoup
 
-from scapper.constants import TELEGRAM_URL_RE
-from scapper.downloader import fetch_url
-from scapper.urls import (
+from scraper.constants import TELEGRAM_URL_RE
+from scraper.downloader import fetch_url
+from scraper.urls import (
     extract_base_slug,
     normalize_telegram_url,
     normalize_telegraph_url,
 )
 
 if TYPE_CHECKING:
-    from scapper.config import ScraperConfig
-    from scapper.storage import Storage
+    from scraper.config import ScraperConfig
+    from scraper.storage import Storage
 
 logger = logging.getLogger("scraper")
 

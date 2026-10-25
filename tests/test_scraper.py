@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
-from scapper.config import ScraperConfig
-from scapper.constants import (
+from scraper.config import ScraperConfig
+from scraper.constants import (
     BROWSER_PROFILES,
     TELEGRAM_MENTION_RE,
     TELEGRAM_RESERVED,
@@ -17,19 +17,19 @@ from scapper.constants import (
     TELEGRAPH_RESERVED,
     TELEGRAPH_URL_RE,
 )
-from scapper.discovery import unwrap_ddg
-from scapper.downloader import (
+from scraper.discovery import unwrap_ddg
+from scraper.downloader import (
     _parse_retry_after,
     download_file,
     download_many,
     probe_url_exists,
 )
-from scapper.engine import MediaScraper
-from scapper.storage import Storage
-from scapper.telegram_api import download_telethon_media
-from scapper.telegram_web import scrape_telegram_web_preview
-from scapper.telegraph import scrape_telegraph_page
-from scapper.urls import (
+from scraper.engine import MediaScraper
+from scraper.storage import Storage
+from scraper.telegram_api import download_telethon_media
+from scraper.telegram_web import scrape_telegram_web_preview
+from scraper.telegraph import scrape_telegraph_page
+from scraper.urls import (
     canonicalize_seed,
     ensure_scheme,
     extract_base_slug,
@@ -39,7 +39,7 @@ from scapper.urls import (
     slugify_telegram_candidates,
     slugify_telegraph_candidates,
 )
-from scapper.utils import detect_media_type_from_bytes
+from scraper.utils import detect_media_type_from_bytes
 
 
 class TestReservedAndRegex(unittest.TestCase):
@@ -1095,7 +1095,7 @@ class TestBugFixesAndImprovements(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detect_media_type_from_bytes(opus_bytes), ("audio/opus", ".opus"))
 
     def test_unwrap_search_url_yandex_and_ddg(self):
-        from scapper.discovery import unwrap_search_url
+        from scraper.discovery import unwrap_search_url
 
         # DuckDuckGo uddg
         ddg = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Ftelegra.ph%2Farticle-10-24"

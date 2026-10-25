@@ -14,19 +14,19 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from scapper.constants import (
+from scraper.constants import (
     BROWSER_PROFILES,
     MEDIA_EXTENSIONS,
     MIME_EXTENSIONS,
     TELEGRAM_DOMAINS,
     TELEGRAPH_DOMAINS,
 )
-from scapper.urls import is_telegraph_media_url
-from scapper.utils import detect_media_type_from_bytes
+from scraper.urls import is_telegraph_media_url
+from scraper.utils import detect_media_type_from_bytes
 
 if TYPE_CHECKING:
-    from scapper.config import ScraperConfig
-    from scapper.storage import Storage
+    from scraper.config import ScraperConfig
+    from scraper.storage import Storage
 
 logger = logging.getLogger("scraper")
 

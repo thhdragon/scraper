@@ -5,7 +5,7 @@ import re
 import urllib.parse
 from pathlib import Path
 
-from scapper.constants import (
+from scraper.constants import (
     MEDIA_EXTENSIONS,
     TELEGRAM_DOMAINS,
     TELEGRAM_RESERVED,

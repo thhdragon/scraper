@@ -1,4 +1,4 @@
-# Scapper
+# Scraper
 
 A high-performance media scraper for **Telegram** and **Telegra.ph** built in Python with resume capability, SHA-256 deduplication, intelligent crawler depth management, and hybrid dual-mode operation (public web previews or Telethon API).
 
@@ -36,7 +36,7 @@ Clone the repository and install dependencies:
 
 ```bash
 git clone <repo-url>
-cd scapper
+cd scraper
 uv sync
 ```
 
@@ -70,15 +70,15 @@ wallpapers
 You can also pass seeds directly via the command line:
 
 ```bash
-uv run scapper durov wallpapers https://telegra.ph/Sample-Article-10-24
+uv run scraper durov wallpapers https://telegra.ph/Sample-Article-10-24
 ```
 
-### 2. Run Scapper
+### 2. Run Scraper
 
 Run the scraper in public web preview mode:
 
 ```bash
-uv run scapper --seeds seeds.txt
+uv run scraper --seeds seeds.txt
 ```
 
 ---
@@ -86,7 +86,7 @@ uv run scapper --seeds seeds.txt
 ## Command Line Interface
 
 ```text
-usage: scapper [-h] [--seeds SEEDS] [--config CONFIG] [--db DB]
+usage: scraper [-h] [--seeds SEEDS] [--config CONFIG] [--db DB]
                [--download-dir DOWNLOAD_DIR] [--no-api] [--no-discovered]
                [--include-discovered] [--min-size MIN_SIZE]
                [--max-depth MAX_DEPTH] [--discover] [--keywords KEYWORDS]
@@ -104,7 +104,7 @@ usage: scapper [-h] [--seeds SEEDS] [--config CONFIG] [--db DB]
 | `--db PATH` | Override SQLite database file path. |
 | `--download-dir PATH` | Override media download directory. |
 | `--no-api` | Force public web scraping mode; bypasses Telethon API even if credentials are configured. |
-| `--include-discovered`| Force loading previously discovered seeds from `discovered_seeds.txt`. |
+| `--include-discovered` | Force loading previously discovered seeds from `discovered_seeds.txt`. |
 | `--no-discovered` | Do not load `discovered_seeds.txt` on startup. |
 | `--min-size KB` | Minimum file size in kilobytes (default: 20 KB). |
 | `--max-depth DEPTH` | Maximum crawl depth (`0` = seed only, `-1` = infinite). |
@@ -165,7 +165,7 @@ usage: scapper [-h] [--seeds SEEDS] [--config CONFIG] [--db DB]
 - **`max_web_depth`**: Maximum depth to follow discovered links (`0` crawls only initial seeds, `-1` crawls indefinitely).
 - **`include_discovered`**: When `true`, automatically reloads channels discovered in past runs from `discovered_seeds.txt`.
 - **`probe_telegraph_dates`**: Automatically probes dates (01-01 through 12-31) for base slugs to discover multi-part articles.
-- **`telegram_api`**: Optional Telegram API credentials (`api_id`, `api_hash`) obtained from [my.telegram.org](https://my.telegram.org). When left null, Scapper operates seamlessly in public web preview mode.
+- **`telegram_api`**: Optional Telegram API credentials (`api_id`, `api_hash`) obtained from [my.telegram.org](https://my.telegram.org). When left null, Scraper operates seamlessly in public web preview mode.
 
 ---
 
@@ -174,16 +174,19 @@ usage: scapper [-h] [--seeds SEEDS] [--config CONFIG] [--db DB]
 All verification and development workflows use `uv`:
 
 ### Run Unit Tests
+
 ```bash
 uv run python -m unittest discover -s tests
 ```
 
 ### Run Linter
+
 ```bash
 uv run ruff check .
 ```
 
 ### Run Type Checker
+
 ```bash
 uv run pyrefly check
 ```

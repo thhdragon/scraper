@@ -6,23 +6,23 @@ import typing
 
 import httpx
 
-from scapper.config import ScraperConfig
-from scapper.constants import (
+from scraper.config import ScraperConfig
+from scraper.constants import (
     TELEGRAM_DOMAINS,
     TELEGRAM_URL_RE,
     TELEGRAPH_DOMAINS,
 )
-from scapper.discovery import run_discovery
-from scapper.downloader import download_many, make_client
-from scapper.storage import Storage
-from scapper.telegram_api import run_api_scraper
-from scapper.telegram_web import scrape_telegram_web_preview
-from scapper.telegraph import (
+from scraper.discovery import run_discovery
+from scraper.downloader import download_many, make_client
+from scraper.storage import Storage
+from scraper.telegram_api import run_api_scraper
+from scraper.telegram_web import scrape_telegram_web_preview
+from scraper.telegraph import (
     probe_slug_all_dates,
     probe_telegraph_suffixes,
     scrape_telegraph_page,
 )
-from scapper.urls import (
+from scraper.urls import (
     extract_base_slug,
     normalize_telegram_url,
     normalize_telegraph_url,

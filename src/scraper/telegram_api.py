@@ -11,25 +11,25 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from scapper.constants import (
+from scraper.constants import (
     MEDIA_EXTENSIONS,
     TELEGRAM_MENTION_RE,
     TELEGRAM_RESERVED,
     TELEGRAM_URL_RE,
     TELEGRAPH_URL_RE,
 )
-from scapper.downloader import extension_from_content_type
-from scapper.urls import (
+from scraper.downloader import extension_from_content_type
+from scraper.urls import (
     extract_base_slug,
     extract_chat_username,
     normalize_telegram_url,
     normalize_telegraph_url,
 )
-from scapper.utils import detect_media_type_from_bytes
+from scraper.utils import detect_media_type_from_bytes
 
 if TYPE_CHECKING:
-    from scapper.config import ScraperConfig
-    from scapper.storage import Storage
+    from scraper.config import ScraperConfig
+    from scraper.storage import Storage
 
 logger = logging.getLogger("scraper")
 

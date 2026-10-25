@@ -6,7 +6,7 @@ import sqlite3
 import typing
 from pathlib import Path
 
-from scapper.urls import (
+from scraper.urls import (
     canonicalize_seed,
     extract_base_slug,
     extract_chat_username,

@@ -1,5 +1,5 @@
 [project]
-name = "scapper"
+name = "scraper"
 version = "0.1.0"
 description = "High-performance Telegram and Telegra.ph media crawler and scraper"
 readme = "README.md"
@@ -22,7 +22,7 @@ dev = [
 
 
 [project.scripts]
-scapper = "scapper.cli:main"
+scraper = "scraper.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]

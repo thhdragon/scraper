@@ -7,15 +7,15 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
-from scapper.config import ScraperConfig
-from scapper.constants import TELEGRAM_URL_RE
-from scapper.engine import MediaScraper
-from scapper.urls import (
+from scraper.config import ScraperConfig
+from scraper.constants import TELEGRAM_URL_RE
+from scraper.engine import MediaScraper
+from scraper.urls import (
     canonicalize_seed,
     normalize_telegram_url,
     normalize_telegraph_url,
 )
-from scapper.utils import setup_logging
+from scraper.utils import setup_logging
 
 logger = logging.getLogger("scraper")
 

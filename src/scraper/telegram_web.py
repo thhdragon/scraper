@@ -8,7 +8,7 @@ from collections.abc import Callable
 import httpx
 from bs4 import BeautifulSoup, Tag
 
-from scapper.constants import (
+from scraper.constants import (
     MEDIA_EXTENSIONS,
     TELEGRAM_DOMAINS,
     TELEGRAM_MENTION_RE,
@@ -16,8 +16,8 @@ from scapper.constants import (
     TELEGRAM_URL_RE,
     TELEGRAPH_URL_RE,
 )
-from scapper.downloader import extension_from_url, fetch_url
-from scapper.urls import (
+from scraper.downloader import extension_from_url, fetch_url
+from scraper.urls import (
     is_telegraph_media_url,
     normalize_telegram_url,
     normalize_telegraph_url,
