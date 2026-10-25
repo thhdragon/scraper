@@ -17,6 +17,7 @@ ENV/
 *.session-journal
 downloads/
 flagged/
+scraper_cache.db
 discovered_seeds.txt
 *.log
 
