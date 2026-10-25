@@ -167,13 +167,22 @@ class Storage:
                     .replace("%", "\\%")
                     .replace("_", "\\_")
                 )
+                target_chat_base = f"https://t.me/s/{chat_user.lower()}"
                 conn.execute(
-                    "DELETE FROM crawled_urls WHERE url LIKE ? ESCAPE '\\'",
-                    (f"https://t.me/s/{escaped_chat}%",),
+                    "DELETE FROM crawled_urls WHERE url = ? OR url LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\'",
+                    (
+                        target_chat_base,
+                        f"https://t.me/s/{escaped_chat}/%",
+                        f"https://t.me/s/{escaped_chat}?%",
+                    ),
                 )
                 conn.execute(
-                    "DELETE FROM crawl_queue WHERE url LIKE ? ESCAPE '\\'",
-                    (f"https://t.me/s/{escaped_chat}%",),
+                    "DELETE FROM crawl_queue WHERE url = ? OR url LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\'",
+                    (
+                        target_chat_base,
+                        f"https://t.me/s/{escaped_chat}/%",
+                        f"https://t.me/s/{escaped_chat}?%",
+                    ),
                 )
                 conn.execute(
                     "DELETE FROM api_channel_progress WHERE channel_username = ?",
@@ -186,13 +195,24 @@ class Storage:
                     .replace("%", "\\%")
                     .replace("_", "\\_")
                 )
+                target_ph_base = f"https://telegra.ph/{base_slug.lower()}"
                 conn.execute(
-                    "DELETE FROM crawled_urls WHERE url LIKE ? ESCAPE '\\'",
-                    (f"https://telegra.ph/{escaped_base}%",),
+                    "DELETE FROM crawled_urls WHERE url = ? OR url LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\'",
+                    (
+                        target_ph_base,
+                        f"https://telegra.ph/{escaped_base}-%",
+                        f"https://telegra.ph/{escaped_base}/%",
+                        f"https://telegra.ph/{escaped_base}?%",
+                    ),
                 )
                 conn.execute(
-                    "DELETE FROM crawl_queue WHERE url LIKE ? ESCAPE '\\'",
-                    (f"https://telegra.ph/{escaped_base}%",),
+                    "DELETE FROM crawl_queue WHERE url = ? OR url LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\'",
+                    (
+                        target_ph_base,
+                        f"https://telegra.ph/{escaped_base}-%",
+                        f"https://telegra.ph/{escaped_base}/%",
+                        f"https://telegra.ph/{escaped_base}?%",
+                    ),
                 )
                 conn.execute(
                     "DELETE FROM probed_base_slugs WHERE base_slug = ?",

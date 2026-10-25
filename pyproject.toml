@@ -31,3 +31,6 @@ build-backend = "uv_build"
 [tool.ruff.lint]
 extend-ignore = ["BLE001", "S110"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

@@ -76,6 +76,8 @@ def _parse_retry_after(
     try:
         dt = email.utils.parsedate_to_datetime(retry_after)
         if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
             now = datetime.now(UTC)
             diff = (dt - now).total_seconds()
             return min(max_wait, max(0.5, diff))
@@ -285,6 +287,11 @@ async def download_file(
                     logger.debug(f"Skipping {url}: HTTP {resp.status_code}")
                     return None
 
+                if resp.status_code in {400, 401, 403, 404, 410, 415}:
+                    storage.record_downloaded_media_url(url, "")
+                    logger.debug(f"Skipping {url}: HTTP {resp.status_code} (marked invalid)")
+                    return None
+
                 if resp.status_code != 200:
                     logger.debug(f"Skipping {url}: HTTP {resp.status_code}")
                     return None
@@ -352,9 +359,9 @@ async def download_file(
                 return None
 
             if header_bytes:
-                header_strip = header_bytes.lstrip()
+                header_strip = header_bytes.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
                 if header_strip.startswith(
-                    (b"<!doctype", b"<!DOCTYPE", b"<html", b"<HTML", b"<?xml", b"{\"", b"{'")
+                    (b"<!doctype", b"<html", b"<?xml", b"{\"", b"{'")
                 ):
                     storage.record_downloaded_media_url(url, "")
                     return None

@@ -31,6 +31,7 @@ from scapper.telegram_web import scrape_telegram_web_preview
 from scapper.telegraph import scrape_telegraph_page
 from scapper.urls import (
     canonicalize_seed,
+    ensure_scheme,
     extract_base_slug,
     extract_chat_username,
     normalize_telegram_url,
@@ -1289,6 +1290,99 @@ class TestBugFixesAndImprovements(unittest.IsolatedAsyncioTestCase):
                 mock_client2.stream = lambda *a, **k: FakeContext2()
                 res2 = await download_file(mock_client2, "https://example.com/fake_image.jpg", cfg, storage)
                 self.assertIsNone(res2)
+            finally:
+                storage.close()
+
+    def test_uncrawl_seed_prefix_safety(self):
+        with tempfile.TemporaryDirectory() as td:
+            storage = Storage(Path(td) / "test.db", Path(td) / "seeds.txt")
+            try:
+                storage.mark_url_crawled("https://t.me/s/cat")
+                storage.mark_url_crawled("https://t.me/s/caterpillar")
+                storage.mark_url_crawled("https://t.me/s/cat?before=100")
+                storage.mark_url_crawled("https://telegra.ph/news-10-24")
+                storage.mark_url_crawled("https://telegra.ph/newsletter-10-24")
+
+                storage.uncrawl_seed("cat")
+                self.assertFalse(storage.has_url_crawled("https://t.me/s/cat"))
+                self.assertFalse(storage.has_url_crawled("https://t.me/s/cat?before=100"))
+                self.assertTrue(storage.has_url_crawled("https://t.me/s/caterpillar"))
+
+                storage.uncrawl_seed("https://telegra.ph/news-10-24")
+                self.assertFalse(storage.has_url_crawled("https://telegra.ph/news-10-24"))
+                self.assertTrue(storage.has_url_crawled("https://telegra.ph/newsletter-10-24"))
+            finally:
+                storage.close()
+
+    def test_ensure_scheme_protocol_relative(self):
+        self.assertEqual(ensure_scheme("//t.me/durov"), "https://t.me/durov")
+        self.assertEqual(ensure_scheme("//telegra.ph/my-slug"), "https://telegra.ph/my-slug")
+        self.assertEqual(normalize_telegram_url("//t.me/durov"), "https://t.me/s/durov")
+        self.assertEqual(normalize_telegraph_url("//telegra.ph/my-slug-10-24"), "https://telegra.ph/my-slug-10-24")
+
+    def test_slugify_telegraph_candidates_extracts_base_slug_variants(self):
+        candidates = slugify_telegraph_candidates("https://telegra.ph/my-great-story-10-24")
+        self.assertIn("my-great-story-10-24", candidates)
+        self.assertIn("my-great-story", candidates)
+        self.assertIn("mygreatstory", candidates)
+
+    def test_parse_retry_after_naive_datetime(self):
+        # Even if HTTP-date parses as offset-naive, it should not raise TypeError
+        naive_str = "Sun, 06 Nov 2030 08:49:37"
+        wait = _parse_retry_after(naive_str, default=5.0)
+        self.assertGreater(wait, 0.5)
+
+    async def test_downloader_permanent_4xx_cached_as_invalid(self):
+        with tempfile.TemporaryDirectory() as td:
+            storage = Storage(Path(td) / "test.db", Path(td) / "seeds.txt")
+            cfg = ScraperConfig(download_dir=Path(td) / "downloads")
+            try:
+                mock_client = MagicMock()
+                mock_resp = MagicMock()
+                mock_resp.status_code = 404
+                mock_resp.headers = {}
+
+                class FakeContext:
+                    async def __aenter__(self):
+                        return mock_resp
+                    async def __aexit__(self, *exc):
+                        pass
+
+                mock_client.stream = lambda *a, **k: FakeContext()
+                url = "https://example.com/dead_image.jpg"
+                res = await download_file(mock_client, url, cfg, storage)
+                self.assertIsNone(res)
+                self.assertTrue(storage.has_media_url_downloaded(url))
+            finally:
+                storage.close()
+
+    async def test_downloader_utf8_bom_html_rejection(self):
+        bom_html = b"\xef\xbb\xbf<!DOCTYPE html><html><body>Error</body></html>" + b" " * 25000
+        with tempfile.TemporaryDirectory() as td:
+            storage = Storage(Path(td) / "test.db", Path(td) / "seeds.txt")
+            cfg = ScraperConfig(download_dir=Path(td) / "downloads")
+            try:
+                mock_client = MagicMock()
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.headers = {"content-type": "application/octet-stream", "content-length": str(len(bom_html))}
+
+                class FakeContext:
+                    async def __aenter__(self):
+                        return mock_resp
+                    async def __aexit__(self, *exc):
+                        pass
+
+                async def fake_aiter(*args, **kwargs):
+                    yield bom_html
+
+                mock_resp.aiter_bytes = fake_aiter
+                mock_client.stream = lambda *a, **k: FakeContext()
+
+                url = "https://example.com/fake_bom.jpg"
+                res = await download_file(mock_client, url, cfg, storage)
+                self.assertIsNone(res)
+                self.assertTrue(storage.has_media_url_downloaded(url))
             finally:
                 storage.close()
 

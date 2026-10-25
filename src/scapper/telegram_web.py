@@ -213,7 +213,7 @@ async def scrape_telegram_web_preview(
                     telegraph_urls.add(ph_norm)
 
         # 9. Cross-pollinate Telegraph candidate slugs from this Telegram channel username (only once per channel root)
-        if m_curr and "?before=" not in url:
+        if m_curr and "before=" not in url:
             ch_name = m_curr.group(1)
             for ph_cand in slugify_telegraph_candidates(ch_name):
                 ph_norm = normalize_telegraph_url(

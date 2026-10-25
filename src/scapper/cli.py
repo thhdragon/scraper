@@ -233,7 +233,7 @@ async def async_main() -> None:
         if args.extra_seeds:
             seeds.extend(args.extra_seeds)
 
-        if args.discover or cfg.discovery_enabled:
+        if args.discover or cfg.discovery_enabled or bool(args.keywords):
             keywords = list(cfg.keywords)
 
             if args.keywords:
@@ -313,6 +313,7 @@ async def async_main() -> None:
                 scraper.storage.uncrawl_seed(seed_val)
 
         await scraper.run(unique_seeds, use_api=not args.no_api)
+        scraper.storage.clean_discovered_seeds()
 
         total = scraper.storage.count_downloaded_hashes()
 

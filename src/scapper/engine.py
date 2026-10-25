@@ -187,7 +187,7 @@ class MediaScraper:
                 self.storage.add_discovered_seed(m.group(1))
 
         m_self = TELEGRAM_URL_RE.match(url)
-        if m_self and self.cfg.probe_telegraph_dates and "?before=" not in url:
+        if m_self and self.cfg.probe_telegraph_dates and "before=" not in url:
             ch_name = m_self.group(1)
             for ph_cand in slugify_telegraph_candidates(ch_name):
                 date_urls = await probe_slug_all_dates(

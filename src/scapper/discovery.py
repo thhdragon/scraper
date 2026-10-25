@@ -24,12 +24,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger("scraper")
 
 
-def unwrap_search_url(href: str) -> str:
+def unwrap_search_url(href: str, default_domain: str = "https://duckduckgo.com") -> str:
     """Unwrap redirect URL from search result links (DuckDuckGo, Yandex, etc.)."""
     if href.startswith("//"):
         href = "https:" + href
     elif href.startswith("/"):
-        href = "https://duckduckgo.com" + href
+        href = default_domain.rstrip("/") + href
 
     parsed = urllib.parse.urlparse(href)
 
@@ -160,7 +160,7 @@ async def discover_urls_yandex(
                 href_val = a.get("href")
                 if not isinstance(href_val, str) or not href_val:
                     continue
-                target = unwrap_search_url(href_val)
+                target = unwrap_search_url(href_val, default_domain="https://yandex.com")
 
                 tg = normalize_telegraph_url(target)
 

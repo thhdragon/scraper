@@ -26,6 +26,9 @@ def ensure_scheme(url: str) -> str:
     if not url:
         return ""
 
+    if url.startswith("//"):
+        return "https:" + url
+
     if "://" not in url:
         return "https://" + url
 
@@ -224,41 +227,47 @@ def slugify_telegraph_candidates(text: str) -> list[str]:
     text = text.split("?")[0].split("#")[0].strip().lstrip("@")
     candidates: list[str] = []
 
-    # 1. Hyphenated slug (converting underscores and spaces to hyphens)
-    ph_hyphen = re.sub(
-        r"-+",
-        "-",
-        re.sub(r"[^A-Za-z0-9_\-]+", "-", text).replace("_", "-").strip("-"),
-    )
-    if (
-        ph_hyphen
-        and len(ph_hyphen) >= 3
-        and ph_hyphen not in candidates
-        and ph_hyphen.lower() not in TELEGRAPH_RESERVED
-    ):
-        candidates.append(ph_hyphen)
+    def _add_variants(slug_text: str) -> None:
+        # 1. Hyphenated slug (converting underscores and spaces to hyphens)
+        ph_hyphen = re.sub(
+            r"-+",
+            "-",
+            re.sub(r"[^A-Za-z0-9_\-]+", "-", slug_text).replace("_", "-").strip("-"),
+        )
+        if (
+            ph_hyphen
+            and len(ph_hyphen) >= 3
+            and ph_hyphen not in candidates
+            and ph_hyphen.lower() not in TELEGRAPH_RESERVED
+        ):
+            candidates.append(ph_hyphen)
 
-    # 2. Preserving underscores if present
-    ph_underscore = re.sub(
-        r"_+", "_", re.sub(r"[^A-Za-z0-9_\-]+", "_", text).strip("-_")
-    )
-    if (
-        ph_underscore
-        and len(ph_underscore) >= 3
-        and ph_underscore not in candidates
-        and ph_underscore.lower() not in TELEGRAPH_RESERVED
-    ):
-        candidates.append(ph_underscore)
+        # 2. Preserving underscores if present
+        ph_underscore = re.sub(
+            r"_+", "_", re.sub(r"[^A-Za-z0-9_\-]+", "_", slug_text).strip("-_")
+        )
+        if (
+            ph_underscore
+            and len(ph_underscore) >= 3
+            and ph_underscore not in candidates
+            and ph_underscore.lower() not in TELEGRAPH_RESERVED
+        ):
+            candidates.append(ph_underscore)
 
-    # 3. Compact without separators
-    ph_compact = re.sub(r"[^A-Za-z0-9]+", "", text)
-    if (
-        ph_compact
-        and len(ph_compact) >= 3
-        and ph_compact not in candidates
-        and ph_compact.lower() not in TELEGRAPH_RESERVED
-    ):
-        candidates.append(ph_compact)
+        # 3. Compact without separators
+        ph_compact = re.sub(r"[^A-Za-z0-9]+", "", slug_text)
+        if (
+            ph_compact
+            and len(ph_compact) >= 3
+            and ph_compact not in candidates
+            and ph_compact.lower() not in TELEGRAPH_RESERVED
+        ):
+            candidates.append(ph_compact)
+
+    _add_variants(text)
+    base = extract_base_slug(text)
+    if base and base != text:
+        _add_variants(base)
 
     return candidates
 
